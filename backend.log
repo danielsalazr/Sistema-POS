@@ -1,0 +1,9 @@
+
+> sublime-pos-api@0.1.0 dev
+> node --watch src/server.js
+
+API escuchando en http://localhost:3001
+Restarting 'src/server.js'
+API escuchando en http://localhost:3020
+Restarting 'src/server.js'
+API escuchando en http://localhost:3020

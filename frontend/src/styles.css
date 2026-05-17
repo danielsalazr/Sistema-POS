@@ -1,0 +1,84 @@
+html {
+  overflow-y: auto;
+}
+
+body {
+  margin: 0;
+  background: #f4f6f8;
+}
+
+.page {
+  padding: 24px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.page-title {
+  font-size: 1.45rem;
+  font-weight: 650;
+}
+
+.page-subtitle {
+  color: #667085;
+  margin-top: 2px;
+}
+
+.brand {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 18px 16px;
+  border-bottom: 1px solid #e7eaee;
+}
+
+.brand__mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #1976d2;
+  color: white;
+  font-weight: 800;
+  font-size: 1.25rem;
+}
+
+.brand__title {
+  font-weight: 750;
+}
+
+.brand__subtitle {
+  color: #667085;
+  font-size: 0.83rem;
+}
+
+.data-card {
+  border-radius: 8px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 14px;
+  }
+
+  .page-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
