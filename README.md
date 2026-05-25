@@ -1,4 +1,4 @@
-# Reconstruccion Sublime POS
+# Dela POS
 
 Base reconstruida en Node + Express + SQLite y Vue 3 + Vuetify.
 
@@ -37,6 +37,12 @@ La API queda en `http://localhost:3001` y el frontend en `http://localhost:5173`
 - Usuario: `admin`
 - Contrasena: `admin`
 
+## Companias
+
+El sistema se llama `Dela POS`. La informacion existente queda asignada a la compania inicial `Dela Crepes`.
+
+Desde la barra superior se puede seleccionar la compania activa o crear una nueva. Las operaciones principales usan la compania activa para productos, clientes, proveedores, ventas, compras, caja, medios de pago, empresa y prestamos/aportes.
+
 ## Modulos reconstruidos
 
 - Login
@@ -63,6 +69,8 @@ La API queda en `http://localhost:3001` y el frontend en `http://localhost:5173`
 6. Registra la venta.
 
 Al registrar una venta, la API guarda `ventas_contado`, guarda el detalle en `productos_vendidos` y descuenta inventario. Al anular una venta desde el historial, devuelve la existencia.
+
+Ventas y compras guardan dos fechas: `fecha` para la fecha real del movimiento y `fechaRegistro` para cuando se registro en el sistema. La UI selecciona solo el dia del movimiento; internamente se guarda como datetime local `YYYY-MM-DD 00:00:00` para evitar conversiones UTC.
 
 Desde el detalle de una venta se puede imprimir un ticket basico. En `Reportes` se puede consultar ventas al contado por fecha y usuario, con totales.
 

@@ -1,8 +1,14 @@
+import { session } from './session.js';
+
 const baseUrl = '/api';
 
 async function request(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-compania-id': String(session.compania?.idCompania || 1),
+      ...(options.headers || {})
+    },
     ...options
   });
 

@@ -1,11 +1,18 @@
 CREATE TABLE IF NOT EXISTS productos (
   idProducto INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  idCompania INTEGER,
   codigoBarras TEXT UNIQUE,
   descripcion TEXT NOT NULL,
   precioCompra REAL NOT NULL,
   precioVenta REAL NOT NULL,
   existencia REAL NOT NULL,
   stock REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS companias (
+  idCompania INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  nombre TEXT NOT NULL UNIQUE,
+  activa INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS clientes (
@@ -24,6 +31,7 @@ CREATE TABLE IF NOT EXISTS proveedores (
 
 CREATE TABLE IF NOT EXISTS personas_financieras (
   idPersonaFinanciera INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  idCompania INTEGER,
   nombre TEXT NOT NULL,
   relacion TEXT NOT NULL,
   numeroTelefono TEXT,
@@ -32,6 +40,7 @@ CREATE TABLE IF NOT EXISTS personas_financieras (
 
 CREATE TABLE IF NOT EXISTS prestamos_aportes (
   idMovimiento INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  idCompania INTEGER,
   idPersonaFinanciera INTEGER NOT NULL,
   tipo TEXT NOT NULL,
   monto REAL NOT NULL,
@@ -81,7 +90,10 @@ CREATE TABLE IF NOT EXISTS ventas_contado (
   monto REAL NOT NULL,
   pago REAL NOT NULL DEFAULT 0,
   estadoPago TEXT NOT NULL DEFAULT 'PAGADA',
+  estadoPreparacion TEXT NOT NULL DEFAULT 'PENDIENTE',
   fecha TEXT NOT NULL,
+  fechaRegistro TEXT,
+  fechaCumplido TEXT,
   idCliente INTEGER NOT NULL,
   idUsuario INTEGER NOT NULL,
   FOREIGN KEY (idCliente) REFERENCES clientes (idCliente) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -90,7 +102,8 @@ CREATE TABLE IF NOT EXISTS ventas_contado (
 
 CREATE TABLE IF NOT EXISTS medios_pago (
   idMedioPago INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-  nombre TEXT NOT NULL UNIQUE,
+  idCompania INTEGER,
+  nombre TEXT NOT NULL,
   activo INTEGER NOT NULL DEFAULT 1
 );
 
@@ -113,6 +126,7 @@ CREATE TABLE IF NOT EXISTS productos_vendidos (
   precioVenta REAL NOT NULL,
   precioVentaOriginal REAL NOT NULL,
   cantidadVendida REAL NOT NULL,
+  nota TEXT,
   FOREIGN KEY (idVenta) REFERENCES ventas_contado (idVenta) ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -121,6 +135,7 @@ CREATE TABLE IF NOT EXISTS compras (
   monto REAL NOT NULL,
   pago REAL NOT NULL DEFAULT 0,
   fecha TEXT NOT NULL,
+  fechaRegistro TEXT,
   idProveedor INTEGER NOT NULL,
   idUsuario INTEGER NOT NULL,
   FOREIGN KEY (idProveedor) REFERENCES proveedores (idProveedor) ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -196,7 +211,8 @@ CREATE TABLE IF NOT EXISTS egresos (
 );
 
 CREATE TABLE IF NOT EXISTS empresa (
-  idEmpresa INTEGER NOT NULL PRIMARY KEY CHECK (idEmpresa = 1),
+  idEmpresa INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  idCompania INTEGER,
   nombre TEXT,
   direccion TEXT,
   telefono TEXT,

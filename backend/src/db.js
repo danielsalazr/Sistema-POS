@@ -14,6 +14,74 @@ export const db = new Database(dbPath);
 db.pragma('foreign_keys = ON');
 db.exec(fs.readFileSync(schemaPath, 'utf8'));
 
+db.prepare('INSERT OR IGNORE INTO companias (idCompania, nombre, activa) VALUES (1, ?, 1)').run('Dela Crepes');
+
+const tablesWithCompany = [
+  'productos',
+  'clientes',
+  'proveedores',
+  'personas_financieras',
+  'usuarios',
+  'ventas_contado',
+  'compras',
+  'ingresos',
+  'egresos',
+  'empresa',
+  'comun',
+  'medios_pago',
+  'prestamos_aportes'
+];
+
+for (const table of tablesWithCompany) {
+  const exists = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  if (!exists) continue;
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name);
+  if (!columns.includes('idCompania')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN idCompania INTEGER DEFAULT 1`);
+    db.exec(`UPDATE ${table} SET idCompania = 1 WHERE idCompania IS NULL`);
+  }
+}
+
+const empresaSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'empresa'").get()?.sql || '';
+if (empresaSql.includes('CHECK (idEmpresa = 1)')) {
+  db.exec('ALTER TABLE empresa RENAME TO empresa_old');
+  db.exec(`
+    CREATE TABLE empresa (
+      idEmpresa INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      idCompania INTEGER,
+      nombre TEXT,
+      direccion TEXT,
+      telefono TEXT,
+      mensajePersonal TEXT
+    )
+  `);
+  db.exec(`
+    INSERT INTO empresa (idCompania, nombre, direccion, telefono, mensajePersonal)
+    SELECT COALESCE(idCompania, 1), nombre, direccion, telefono, mensajePersonal
+    FROM empresa_old
+  `);
+  db.exec('DROP TABLE empresa_old');
+}
+
+const mediosPagoSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'medios_pago'").get()?.sql || '';
+if (mediosPagoSql.includes('UNIQUE')) {
+  db.exec('ALTER TABLE medios_pago RENAME TO medios_pago_old');
+  db.exec(`
+    CREATE TABLE medios_pago (
+      idMedioPago INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+      idCompania INTEGER,
+      nombre TEXT NOT NULL,
+      activo INTEGER NOT NULL DEFAULT 1
+    )
+  `);
+  db.exec(`
+    INSERT INTO medios_pago (idMedioPago, idCompania, nombre, activo)
+    SELECT idMedioPago, COALESCE(idCompania, 1), nombre, activo
+    FROM medios_pago_old
+  `);
+  db.exec('DROP TABLE medios_pago_old');
+}
+
 const ventasColumns = db.prepare('PRAGMA table_info(ventas_contado)').all().map((column) => column.name);
 if (!ventasColumns.includes('estadoPago')) {
   db.exec("ALTER TABLE ventas_contado ADD COLUMN estadoPago TEXT NOT NULL DEFAULT 'PAGADA'");
@@ -25,6 +93,29 @@ if (!ventasColumns.includes('estadoPago')) {
       ELSE 'PAGADA'
     END
   `);
+}
+if (!ventasColumns.includes('fechaRegistro')) {
+  db.exec('ALTER TABLE ventas_contado ADD COLUMN fechaRegistro TEXT');
+  db.exec('UPDATE ventas_contado SET fechaRegistro = fecha WHERE fechaRegistro IS NULL');
+}
+if (!ventasColumns.includes('estadoPreparacion')) {
+  db.exec("ALTER TABLE ventas_contado ADD COLUMN estadoPreparacion TEXT NOT NULL DEFAULT 'PENDIENTE'");
+  db.exec("UPDATE ventas_contado SET estadoPreparacion = 'CUMPLIDO' WHERE estadoPreparacion = 'PENDIENTE'");
+}
+if (!ventasColumns.includes('fechaCumplido')) {
+  db.exec('ALTER TABLE ventas_contado ADD COLUMN fechaCumplido TEXT');
+  db.exec("UPDATE ventas_contado SET fechaCumplido = COALESCE(fechaRegistro, fecha) WHERE estadoPreparacion = 'CUMPLIDO' AND fechaCumplido IS NULL");
+}
+
+const productosVendidosColumns = db.prepare('PRAGMA table_info(productos_vendidos)').all().map((column) => column.name);
+if (productosVendidosColumns.length && !productosVendidosColumns.includes('nota')) {
+  db.exec("ALTER TABLE productos_vendidos ADD COLUMN nota TEXT DEFAULT ''");
+}
+
+const comprasColumns = db.prepare('PRAGMA table_info(compras)').all().map((column) => column.name);
+if (comprasColumns.length && !comprasColumns.includes('fechaRegistro')) {
+  db.exec('ALTER TABLE compras ADD COLUMN fechaRegistro TEXT');
+  db.exec('UPDATE compras SET fechaRegistro = fecha WHERE fechaRegistro IS NULL');
 }
 
 const productosCompradosColumns = db.prepare('PRAGMA table_info(productos_comprados)').all();
@@ -56,7 +147,7 @@ if (idProductoCompra?.notnull) {
 
 const defaults = db.transaction(() => {
   db.prepare('INSERT OR IGNORE INTO clientes (idCliente, nombreCompleto, numeroTelefono) VALUES (1, ?, ?)').run('Mostrador', '0000000000');
-  db.prepare('INSERT OR IGNORE INTO empresa (idEmpresa, nombre, direccion, telefono, mensajePersonal) VALUES (1, ?, ?, ?, ?)').run('', '', '', '');
+  db.prepare('INSERT INTO empresa (idCompania, nombre, direccion, telefono, mensajePersonal) SELECT 1, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM empresa WHERE idCompania = 1)').run('', '', '', '');
   db.prepare('INSERT OR IGNORE INTO usuarios (idUsuario, nombre, contrasena) VALUES (1, ?, ?)').run('admin', 'admin');
 
   const permisos = [
@@ -103,8 +194,8 @@ const defaults = db.transaction(() => {
   for (const item of comun) insertComun.run(...item);
 
   const mediosPago = ['Efectivo', 'Tarjeta', 'Transferencia'];
-  const insertMedioPago = db.prepare('INSERT OR IGNORE INTO medios_pago (nombre, activo) VALUES (?, 1)');
-  for (const medio of mediosPago) insertMedioPago.run(medio);
+  const insertMedioPago = db.prepare('INSERT INTO medios_pago (idCompania, nombre, activo) SELECT 1, ?, 1 WHERE NOT EXISTS (SELECT 1 FROM medios_pago WHERE idCompania = 1 AND lower(nombre) = lower(?))');
+  for (const medio of mediosPago) insertMedioPago.run(medio, medio);
 });
 
 defaults();

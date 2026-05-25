@@ -75,6 +75,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
 import { api } from '../api.js';
+import { formatLocalDateTime } from '../dates.js';
 
 const loading = ref(false);
 const ventas = ref([]);
@@ -101,7 +102,7 @@ function currency(value) {
 }
 
 function formatDate(value) {
-  return new Intl.DateTimeFormat('es-CO', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+  return formatLocalDateTime(value);
 }
 
 function queryString() {

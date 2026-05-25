@@ -13,11 +13,13 @@ import MediosPagoView from './views/MediosPagoView.vue';
 import ProveedoresView from './views/ProveedoresView.vue';
 import ComprasView from './views/ComprasView.vue';
 import PrestamosAportesView from './views/PrestamosAportesView.vue';
+import PantallaPedidosView from './views/PantallaPedidosView.vue';
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
+    { path: '/pantalla-pedidos', name: 'pantalla-pedidos', component: PantallaPedidosView, meta: { public: true, kiosk: true } },
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/productos', name: 'productos', component: ProductosView },
     { path: '/ventas', name: 'ventas', component: VentasView },

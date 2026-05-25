@@ -49,6 +49,11 @@ body {
   font-size: 1.25rem;
 }
 
+.company-select {
+  max-width: 220px;
+  min-width: 170px;
+}
+
 .brand__title {
   font-weight: 750;
 }

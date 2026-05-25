@@ -17,7 +17,54 @@
               Editando venta {{ ventaEditando.idVenta }}. Al guardar se recalcula el inventario.
             </v-alert>
             <v-row>
-              <v-col cols="12" md="6">
+              <v-col cols="12" md="5">
+                <div class="date-config">
+                  <v-text-field
+                    v-model="fechaMovimiento"
+                    label="Fecha y hora del movimiento"
+                    type="datetime-local"
+                    prepend-inner-icon="mdi-calendar-clock"
+                    :color="fechaMovimientoConfigurada ? 'warning' : undefined"
+                    :hint="fechaMovimientoConfigurada ? 'Fecha configurada por defecto' : 'Sin configurar: usa fecha actual'"
+                    persistent-hint
+                  />
+                  <v-btn
+                    class="date-config-button"
+                    :color="fechaMovimientoConfigurada ? 'warning' : 'primary'"
+                    :prepend-icon="fechaMovimientoConfigurada ? 'mdi-calendar-edit' : 'mdi-calendar-check'"
+                    variant="tonal"
+                    @click="guardarFechaMovimientoConfigurada"
+                  >
+                    {{ fechaMovimientoConfigurada ? 'Actualizar fecha fija' : 'Fijar fecha' }}
+                  </v-btn>
+                  <v-btn
+                    v-if="fechaMovimientoConfigurada"
+                    class="date-config-button"
+                    color="error"
+                    prepend-icon="mdi-calendar-remove"
+                    variant="text"
+                    @click="quitarFechaMovimientoConfigurada"
+                  >
+                    Quitar
+                  </v-btn>
+                </div>
+              </v-col>
+              <v-col cols="12" md="7">
+                <v-autocomplete
+                  v-model="clienteSeleccionado"
+                  v-model:search="busquedaCliente"
+                  :items="clientes"
+                  :loading="cargandoClientes"
+                  item-title="nombreCompleto"
+                  item-value="idCliente"
+                  label="Cliente"
+                  prepend-inner-icon="mdi-account"
+                  return-object
+                  clearable
+                  @update:search="buscarClientes"
+                />
+              </v-col>
+              <v-col cols="12" md="7">
                 <v-autocomplete
                   v-model="productoPendiente"
                   v-model:search="busquedaProducto"
@@ -39,7 +86,7 @@
                   </template>
                 </v-autocomplete>
               </v-col>
-              <v-col cols="6" md="2">
+              <v-col cols="6" md="3">
                 <v-text-field
                   v-model.number="cantidadPendiente"
                   label="Cantidad"
@@ -60,20 +107,6 @@
                   Agregar
                 </v-btn>
               </v-col>
-              <v-col cols="12" md="2">
-                <v-autocomplete
-                  v-model="clienteSeleccionado"
-                  v-model:search="busquedaCliente"
-                  :items="clientes"
-                  :loading="cargandoClientes"
-                  item-title="nombreCompleto"
-                  item-value="idCliente"
-                  label="Cliente"
-                  prepend-inner-icon="mdi-account"
-                  return-object
-                  @update:search="buscarClientes"
-                />
-              </v-col>
             </v-row>
 
             <v-table density="comfortable">
@@ -82,13 +115,14 @@
                   <th>Producto</th>
                   <th class="text-right">Precio</th>
                   <th class="text-right">Cantidad</th>
+                  <th>Nota cocina</th>
                   <th class="text-right">Subtotal</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="carrito.length === 0">
-                  <td colspan="5" class="empty-row">Agrega productos para iniciar la venta.</td>
+                  <td colspan="6" class="empty-row">Agrega productos para iniciar la venta.</td>
                 </tr>
                 <tr v-for="item in carrito" :key="item.idProducto">
                   <td>
@@ -104,6 +138,14 @@
                       :max="item.existencia"
                       density="compact"
                       hide-details
+                    />
+                  </td>
+                  <td class="note-cell">
+                    <v-text-field
+                      v-model="item.nota"
+                      density="compact"
+                      hide-details
+                      placeholder="Sin cebolla..."
                     />
                   </td>
                   <td class="text-right">{{ currency(item.precioVenta * item.cantidadVendida) }}</td>
@@ -183,7 +225,7 @@
       <v-col cols="12" lg="5">
         <v-card class="data-card" variant="flat" border>
           <v-card-title>Ultimas ventas</v-card-title>
-          <v-data-table :headers="headers" :items="ventas" :loading="cargandoVentas" item-value="idVenta" density="comfortable">
+          <v-data-table :key="historialKey" :headers="headers" :items="ventas" :loading="cargandoVentas" item-value="idVenta" density="comfortable">
             <template #item.monto="{ item }">{{ currency(item.monto) }}</template>
             <template #item.saldo="{ item }">{{ currency(Math.max(item.saldo || 0, 0)) }}</template>
             <template #item.estadoPago="{ item }">
@@ -225,7 +267,8 @@
             <v-col cols="12" md="6">
               <v-list density="compact">
                 <v-list-item title="Usuario" :subtitle="detalle.usuario" />
-                <v-list-item title="Fecha" :subtitle="formatDate(detalle.fecha)" />
+                <v-list-item title="Fecha del movimiento" :subtitle="formatDate(detalle.fecha)" />
+                <v-list-item title="Fecha de registro" :subtitle="formatDate(detalle.fechaRegistro)" />
                 <v-list-item title="Estado de pago" :subtitle="detalle.estadoPago" />
               </v-list>
             </v-col>
@@ -245,6 +288,7 @@
                 <td>
                   <div class="font-weight-medium">{{ producto.descripcion }}</div>
                   <div class="text-caption text-medium-emphasis">{{ producto.codigoBarras || 'Sin codigo' }}</div>
+                  <div v-if="producto.nota" class="sale-note">{{ producto.nota }}</div>
                 </td>
                 <td class="text-right">{{ producto.cantidadVendida }}</td>
                 <td class="text-right">{{ currency(producto.precioVenta) }}</td>
@@ -324,7 +368,10 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { api } from '../api.js';
+import { currentDateTimeInput, formatLocalDateTime, inputToSql, sqlToInput } from '../dates.js';
 import { session } from '../session.js';
+
+const fechaMovimientoStorageKey = 'dela-pos.ventas.fechaMovimiento';
 
 const productos = ref([]);
 const clientes = ref([]);
@@ -338,12 +385,15 @@ const cantidadPendiente = ref(1);
 const clienteSeleccionado = ref(null);
 const busquedaProducto = ref('');
 const busquedaCliente = ref('');
+const fechaMovimiento = ref(fechaMovimientoInicial());
+const fechaMovimientoConfigurada = ref(Boolean(localStorage.getItem(fechaMovimientoStorageKey)));
 const cargandoProductos = ref(false);
 const cargandoClientes = ref(false);
 const cargandoVentas = ref(false);
 const guardando = ref(false);
 const detalleDialog = ref(false);
 const pagoDialog = ref(false);
+const historialKey = ref(0);
 const detalle = ref(null);
 const ventaEditando = ref(null);
 const ventaParaPagar = ref(null);
@@ -386,7 +436,7 @@ function currency(value) {
 }
 
 function formatDate(value) {
-  return new Intl.DateTimeFormat('es-CO', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+  return formatLocalDateTime(value);
 }
 
 function estadoPagoColor(estado) {
@@ -397,6 +447,30 @@ function estadoPagoColor(estado) {
 
 function notify(text, color = 'success') {
   snackbar.value = { visible: true, text, color };
+}
+
+function fechaMovimientoInicial() {
+  return localStorage.getItem(fechaMovimientoStorageKey) || currentDateTimeInput();
+}
+
+function guardarFechaMovimientoConfigurada() {
+  fechaMovimiento.value = fechaMovimiento.value || currentDateTimeInput();
+  localStorage.setItem(fechaMovimientoStorageKey, fechaMovimiento.value);
+  fechaMovimientoConfigurada.value = true;
+  notify('Fecha fija configurada para las siguientes ventas.', 'info');
+}
+
+function quitarFechaMovimientoConfigurada() {
+  localStorage.removeItem(fechaMovimientoStorageKey);
+  fechaMovimientoConfigurada.value = false;
+  fechaMovimiento.value = currentDateTimeInput();
+  notify('Fecha fija removida. Las nuevas ventas usaran la fecha actual.', 'info');
+}
+
+function restaurarFechaMovimientoPorDefecto() {
+  fechaMovimiento.value = fechaMovimientoConfigurada.value
+    ? localStorage.getItem(fechaMovimientoStorageKey) || fechaMovimiento.value
+    : currentDateTimeInput();
 }
 
 async function buscarProductos() {
@@ -449,7 +523,7 @@ async function agregarProducto(producto, cantidad = 1) {
     const nuevaCantidad = existente.cantidadVendida + cantidadSolicitada;
     existente.cantidadVendida = Math.min(nuevaCantidad, existente.existencia);
   } else {
-    carrito.value.push({ ...producto, cantidadVendida: Math.min(cantidadSolicitada, producto.existencia) });
+    carrito.value.push({ ...producto, cantidadVendida: Math.min(cantidadSolicitada, producto.existencia), nota: '' });
   }
   productoPendiente.value = null;
   cantidadPendiente.value = 1;
@@ -476,6 +550,7 @@ function limpiarVenta() {
   registrarPagoInicial.value = true;
   productoPendiente.value = null;
   cantidadPendiente.value = 1;
+  restaurarFechaMovimientoPorDefecto();
 }
 
 function cancelarEdicion() {
@@ -489,6 +564,7 @@ async function registrarVenta() {
     const payload = {
       idCliente: clienteSeleccionado.value.idCliente,
       idUsuario: session.usuario.idUsuario,
+      fechaMovimiento: inputToSql(fechaMovimiento.value),
       pagos: registrarPagoInicial.value ? pagos.value.map((pagoItem) => ({
         idMedioPago: pagoItem.idMedioPago,
         monto: Number(pagoItem.monto),
@@ -497,7 +573,8 @@ async function registrarVenta() {
       productos: carrito.value.map((item) => ({
         idProducto: item.idProducto,
         cantidadVendida: Number(item.cantidadVendida),
-        precioVenta: Number(item.precioVenta)
+        precioVenta: Number(item.precioVenta),
+        nota: item.nota || ''
       }))
     };
     const venta = ventaEditando.value
@@ -506,7 +583,7 @@ async function registrarVenta() {
     notify(`Venta ${venta.idVenta} ${ventaEditando.value ? 'actualizada' : 'registrada'}. Cambio: ${currency(venta.cambio)}`);
     ventaEditando.value = null;
     limpiarVenta();
-    await Promise.all([buscarProductos(), loadHistorial()]);
+    await Promise.all([buscarProductos(), refrescarVentas()]);
   } catch (err) {
     notify(err.message, 'error');
   } finally {
@@ -518,8 +595,19 @@ async function loadHistorial() {
   cargandoVentas.value = true;
   try {
     ventas.value = await api.get('/ventas/contado');
+    historialKey.value += 1;
   } finally {
     cargandoVentas.value = false;
+  }
+}
+
+async function refrescarVentas() {
+  await loadHistorial();
+  if (detalleDialog.value && detalle.value?.idVenta) {
+    detalle.value = await api.get(`/ventas/contado/${detalle.value.idVenta}`);
+  }
+  if (ventaParaPagar.value?.idVenta) {
+    ventaParaPagar.value = ventas.value.find((venta) => venta.idVenta === ventaParaPagar.value.idVenta) || ventaParaPagar.value;
   }
 }
 
@@ -537,6 +625,7 @@ function imprimirTicket() {
   const filas = detalle.value.productos.map((producto) => `
     <tr>
       <td>${producto.descripcion}</td>
+      <td>${producto.nota ? `<strong>${producto.nota}</strong>` : ''}</td>
       <td class="right">${producto.cantidadVendida}</td>
       <td class="right">${currency(producto.precioVenta)}</td>
       <td class="right">${currency(producto.precioVenta * producto.cantidadVendida)}</td>
@@ -561,13 +650,14 @@ function imprimirTicket() {
       <body>
         <h1>Sublime POS</h1>
         <p>Venta: ${detalle.value.idVenta}</p>
-        <p>Fecha: ${formatDate(detalle.value.fecha)}</p>
+        <p>Fecha movimiento: ${formatDate(detalle.value.fecha)}</p>
+        <p>Fecha registro: ${formatDate(detalle.value.fechaRegistro)}</p>
         <p>Cliente: ${detalle.value.cliente}</p>
         <p>Usuario: ${detalle.value.usuario}</p>
         <p>Pago: ${(detalle.value.pagos || []).map((pagoItem) => `${pagoItem.medioPago} ${currency(pagoItem.monto)}`).join(' / ')}</p>
         <table>
           <thead>
-            <tr><th>Producto</th><th class="right">Cant.</th><th class="right">P.Unit</th><th class="right">Subtotal</th></tr>
+            <tr><th>Producto</th><th>Nota</th><th class="right">Cant.</th><th class="right">P.Unit</th><th class="right">Subtotal</th></tr>
           </thead>
           <tbody>${filas}</tbody>
         </table>
@@ -604,7 +694,8 @@ async function editarVenta(venta) {
         precioVenta: producto.precioVenta,
         existencia: Number(producto.cantidadVendida) + Number(productoActual?.existencia || 0),
         stock: productoActual?.stock || 0,
-        cantidadVendida: producto.cantidadVendida
+        cantidadVendida: producto.cantidadVendida,
+        nota: producto.nota || ''
       };
     });
     pagos.value = ventaCompleta.pagos?.length
@@ -615,6 +706,7 @@ async function editarVenta(venta) {
       }))
       : [{ idMedioPago: medioEfectivo()?.idMedioPago || null, monto: ventaCompleta.pago, referencia: '' }];
     registrarPagoInicial.value = pagos.value.some((pagoItem) => Number(pagoItem.monto || 0) > 0);
+    fechaMovimiento.value = sqlToInput(ventaCompleta.fecha);
     detalleDialog.value = false;
     notify(`Venta ${ventaCompleta.idVenta} cargada para edicion`, 'info');
   } catch (err) {
@@ -650,7 +742,7 @@ async function registrarPagoPosterior() {
     });
     notify(`Pago registrado en venta ${ventaParaPagar.value.idVenta}`);
     pagoDialog.value = false;
-    await loadHistorial();
+    await refrescarVentas();
   } catch (err) {
     notify(err.message, 'error');
   } finally {
@@ -662,7 +754,7 @@ async function anularVenta(venta) {
   try {
     await api.delete(`/ventas/contado/${venta.idVenta}`);
     notify(`Venta ${venta.idVenta} anulada`);
-    await Promise.all([buscarProductos(), loadHistorial()]);
+    await Promise.all([buscarProductos(), refrescarVentas()]);
   } catch (err) {
     notify(err.message, 'error');
   }
@@ -682,6 +774,25 @@ onMounted(async () => {
 
 .qty-cell {
   width: 120px;
+}
+
+.note-cell {
+  min-width: 180px;
+}
+
+.sale-note {
+  color: #b45309;
+  font-weight: 800;
+  margin-top: 4px;
+}
+
+.date-config {
+  display: grid;
+  gap: 8px;
+}
+
+.date-config-button {
+  justify-self: start;
 }
 
 .totals {

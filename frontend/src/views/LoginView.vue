@@ -1,7 +1,7 @@
 <template>
   <div class="login-page">
     <v-card class="login-card" elevation="8">
-      <v-card-title class="text-h5">Sublime POS</v-card-title>
+      <v-card-title class="text-h5">Dela POS</v-card-title>
       <v-card-subtitle>Ingreso al sistema reconstruido</v-card-subtitle>
       <v-card-text>
         <v-alert v-if="error" class="mb-4" type="error" density="compact">{{ error }}</v-alert>

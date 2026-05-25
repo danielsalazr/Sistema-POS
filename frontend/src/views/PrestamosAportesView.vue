@@ -18,9 +18,22 @@
           <v-card-text>
             <v-text-field v-model="q" label="Buscar" prepend-inner-icon="mdi-magnify" hide-details @input="loadPersonas" />
           </v-card-text>
-          <v-data-table :headers="personasHeaders" :items="personas" :loading="loadingPersonas" item-value="idPersonaFinanciera" density="comfortable">
-            <template #item.negocioDebe="{ item }">{{ currency(item.negocioDebe) }}</template>
-            <template #item.personaDebe="{ item }">{{ currency(item.personaDebe) }}</template>
+          <v-data-table
+            :key="personasKey"
+            :headers="personasHeaders"
+            :items="personas"
+            :loading="loadingPersonas"
+            item-value="idPersonaFinanciera"
+            density="comfortable"
+            hover
+            @click:row="verMovimientosPersona"
+          >
+            <template #item.negocioDebe="{ item }">
+              <span :class="deudaClase(item.negocioDebe)">{{ currency(item.negocioDebe) }}</span>
+            </template>
+            <template #item.personaDebe="{ item }">
+              <span :class="deudaClase(item.personaDebe)">{{ currency(item.personaDebe) }}</span>
+            </template>
             <template #item.actions="{ item }">
               <v-btn icon="mdi-pencil" size="small" variant="text" @click="editarPersona(item)" />
             </template>
@@ -34,7 +47,7 @@
             <v-card class="data-card" variant="flat" border>
               <v-card-text>
                 <div class="metric-label">El negocio debe</div>
-                <div class="metric-value">{{ currency(totalNegocioDebe) }}</div>
+                <div class="metric-value" :class="deudaClase(totalNegocioDebe)">{{ currency(totalNegocioDebe) }}</div>
               </v-card-text>
             </v-card>
           </v-col>
@@ -42,7 +55,7 @@
             <v-card class="data-card" variant="flat" border>
               <v-card-text>
                 <div class="metric-label">Le deben al negocio</div>
-                <div class="metric-value">{{ currency(totalPersonaDebe) }}</div>
+                <div class="metric-value" :class="deudaClase(totalPersonaDebe)">{{ currency(totalPersonaDebe) }}</div>
               </v-card-text>
             </v-card>
           </v-col>
@@ -50,7 +63,13 @@
 
         <v-card class="data-card" variant="flat" border>
           <v-card-title>Movimientos</v-card-title>
-          <v-data-table :headers="movimientosHeaders" :items="movimientos" :loading="loadingMovimientos" item-value="idMovimiento">
+          <v-data-table
+            :key="movimientosKey"
+            :headers="movimientosHeaders"
+            :items="movimientos"
+            :loading="loadingMovimientos"
+            item-value="idMovimiento"
+          >
             <template #item.tipo="{ item }">{{ tipoLabel(item.tipo) }}</template>
             <template #item.monto="{ item }">
               <span :class="tipoClase(item.tipo)">{{ signoMovimiento(item.tipo) }}{{ currency(item.monto) }}</span>
@@ -202,6 +221,58 @@
       </v-card>
     </v-dialog>
 
+    <v-dialog v-model="movimientosPersonaDialog" max-width="980">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <span>Movimientos de {{ personaSeleccionada?.nombre }}</span>
+          <v-spacer />
+          <v-btn icon="mdi-close" variant="text" @click="movimientosPersonaDialog = false" />
+        </v-card-title>
+        <v-card-text>
+          <v-row class="mb-2" v-if="personaSeleccionada">
+            <v-col cols="12" md="6">
+              <v-card class="data-card" variant="flat" border>
+                <v-card-text>
+                  <div class="metric-label">Negocio debe</div>
+                  <div class="metric-value" :class="deudaClase(personaSeleccionada.negocioDebe)">
+                    {{ currency(personaSeleccionada.negocioDebe) }}
+                  </div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-card class="data-card" variant="flat" border>
+                <v-card-text>
+                  <div class="metric-label">Persona debe</div>
+                  <div class="metric-value" :class="deudaClase(personaSeleccionada.personaDebe)">
+                    {{ currency(personaSeleccionada.personaDebe) }}
+                  </div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+          </v-row>
+
+          <v-data-table :headers="movimientosPersonaHeaders" :items="movimientosPersona" item-value="idMovimiento" density="comfortable">
+            <template #item.fecha="{ item }">{{ formatDate(item.fecha) }}</template>
+            <template #item.tipo="{ item }">{{ tipoLabel(item.tipo) }}</template>
+            <template #item.monto="{ item }">
+              <span :class="tipoClase(item.tipo)">{{ signoMovimiento(item.tipo) }}{{ currency(item.monto) }}</span>
+            </template>
+            <template #item.subsanado="{ item }">{{ currency(item.subsanado) }}</template>
+            <template #item.saldo="{ item }">{{ currency(item.saldo) }}</template>
+            <template #item.estado="{ item }">
+              <v-chip :color="estadoColor(item.estado)" size="small">{{ item.estado }}</v-chip>
+            </template>
+            <template #item.actions="{ item }">
+              <v-btn icon="mdi-eye" size="small" variant="text" @click="verDetalleMovimiento(item)" />
+              <v-btn icon="mdi-cash-sync" size="small" variant="text" color="success" :disabled="item.estado === 'SUBSANADO'" @click="abrirSubsanacion(item)" />
+              <v-btn icon="mdi-pencil" size="small" variant="text" @click="editarMovimiento(item)" />
+            </template>
+          </v-data-table>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+
     <v-snackbar v-model="snackbar.visible" :color="snackbar.color" timeout="3500">{{ snackbar.text }}</v-snackbar>
   </section>
 </template>
@@ -216,6 +287,9 @@ const movimientos = ref([]);
 const mediosPago = ref([]);
 const detalle = ref(null);
 const movimientoSeleccionado = ref(null);
+const personaSeleccionada = ref(null);
+const personasKey = ref(0);
+const movimientosKey = ref(0);
 const q = ref('');
 const loadingPersonas = ref(false);
 const loadingMovimientos = ref(false);
@@ -226,6 +300,7 @@ const personaDialog = ref(false);
 const movimientoDialog = ref(false);
 const subsanacionDialog = ref(false);
 const detalleDialog = ref(false);
+const movimientosPersonaDialog = ref(false);
 const snackbar = ref({ visible: false, text: '', color: 'success' });
 
 const relaciones = ['Dueno', 'Socio', 'Familiar', 'Empleado', 'Tercero', 'Inversionista'];
@@ -265,6 +340,11 @@ const movimientosHeaders = [
 const totalNegocioDebe = computed(() => personas.value.reduce((sum, persona) => sum + Number(persona.negocioDebe || 0), 0));
 const totalPersonaDebe = computed(() => personas.value.reduce((sum, persona) => sum + Number(persona.personaDebe || 0), 0));
 const puedeGuardarSubsanacion = computed(() => Number(subsanacionForm.monto || 0) > 0 && Number(subsanacionForm.monto || 0) <= Number(movimientoSeleccionado.value?.saldo || 0));
+const movimientosPersonaHeaders = movimientosHeaders.filter((header) => header.key !== 'persona');
+const movimientosPersona = computed(() => {
+  if (!personaSeleccionada.value?.idPersonaFinanciera) return [];
+  return movimientos.value.filter((item) => item.idPersonaFinanciera === personaSeleccionada.value.idPersonaFinanciera);
+});
 
 function emptyPersona() {
   return { idPersonaFinanciera: null, nombre: '', relacion: 'Tercero', numeroTelefono: '', notas: '' };
@@ -302,6 +382,10 @@ function signoMovimiento(value) {
   return esEntrada(value) ? '+ ' : '- ';
 }
 
+function deudaClase(value) {
+  return Number(value || 0) > 0 ? 'debt-positive' : 'debt-cleared';
+}
+
 function estadoColor(estado) {
   if (estado === 'SUBSANADO') return 'success';
   if (estado === 'PARCIAL') return 'warning';
@@ -316,6 +400,7 @@ async function loadPersonas() {
   loadingPersonas.value = true;
   try {
     personas.value = await api.get(`/personas-financieras?q=${encodeURIComponent(q.value)}`);
+    personasKey.value += 1;
   } finally {
     loadingPersonas.value = false;
   }
@@ -325,6 +410,7 @@ async function loadMovimientos() {
   loadingMovimientos.value = true;
   try {
     movimientos.value = await api.get('/prestamos-aportes');
+    movimientosKey.value += 1;
   } finally {
     loadingMovimientos.value = false;
   }
@@ -332,6 +418,29 @@ async function loadMovimientos() {
 
 async function loadMediosPago() {
   mediosPago.value = await api.get('/medios-pago');
+}
+
+async function refrescarPrestamosAportes() {
+  await Promise.all([loadPersonas(), loadMovimientos()]);
+
+  if (movimientoSeleccionado.value?.idMovimiento) {
+    const actualizado = movimientos.value.find((item) => item.idMovimiento === movimientoSeleccionado.value.idMovimiento);
+    if (actualizado) movimientoSeleccionado.value = actualizado;
+  }
+
+  if (personaSeleccionada.value?.idPersonaFinanciera) {
+    const personaActualizada = personas.value.find((item) => item.idPersonaFinanciera === personaSeleccionada.value.idPersonaFinanciera);
+    if (personaActualizada) personaSeleccionada.value = personaActualizada;
+  }
+
+  if (detalleDialog.value && detalle.value?.idMovimiento) {
+    detalle.value = await api.get(`/prestamos-aportes/${detalle.value.idMovimiento}`);
+  }
+}
+
+function verMovimientosPersona(_event, row) {
+  personaSeleccionada.value = row.item;
+  movimientosPersonaDialog.value = true;
 }
 
 function nuevaPersona() {
@@ -366,7 +475,7 @@ async function guardarPersona() {
     if (personaForm.idPersonaFinanciera) await api.put(`/personas-financieras/${personaForm.idPersonaFinanciera}`, personaForm);
     else await api.post('/personas-financieras', personaForm);
     personaDialog.value = false;
-    await loadPersonas();
+    await refrescarPrestamosAportes();
   } catch (err) {
     notify(err.message, 'error');
   } finally {
@@ -386,7 +495,7 @@ async function guardarMovimiento() {
     else await api.post('/prestamos-aportes', payload);
     movimientoDialog.value = false;
     notify(`Movimiento ${movimientoForm.idMovimiento ? 'actualizado' : 'registrado'}`);
-    await Promise.all([loadPersonas(), loadMovimientos()]);
+    await refrescarPrestamosAportes();
   } catch (err) {
     notify(err.message, 'error');
   } finally {
@@ -410,7 +519,7 @@ async function guardarSubsanacion() {
     });
     subsanacionDialog.value = false;
     notify('Subsanacion registrada');
-    await Promise.all([loadPersonas(), loadMovimientos()]);
+    await refrescarPrestamosAportes();
   } catch (err) {
     notify(err.message, 'error');
   } finally {
@@ -458,6 +567,16 @@ onMounted(async () => {
 .money-out {
   color: #d32f2f;
   font-weight: 700;
+}
+
+.debt-positive {
+  color: #d32f2f;
+  font-weight: 760;
+}
+
+.debt-cleared {
+  color: #2e7d32;
+  font-weight: 760;
 }
 
 .empty-row {

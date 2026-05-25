@@ -1,7 +1,7 @@
 import cors from 'cors';
 import express from 'express';
 import { db } from './db.js';
-import { nowSql, numeric, requireFields } from './utils.js';
+import { normalizeDateTimeInput, nowSql, numeric, requireFields } from './utils.js';
 
 const app = express();
 const port = process.env.PORT || 3020;
@@ -11,6 +11,30 @@ app.use(express.json());
 
 app.get('/api/salud', (req, res) => {
   res.json({ ok: true });
+});
+
+function companiaId(req) {
+  return numeric(req.headers['x-compania-id'] || req.query.idCompania || 1, 1);
+}
+
+app.get('/api/companias', (req, res) => {
+  res.json(db.prepare('SELECT * FROM companias WHERE activa = 1 ORDER BY nombre').all());
+});
+
+app.post('/api/companias', (req, res) => {
+  requireFields(req.body, ['nombre']);
+  const crear = db.transaction(() => {
+    const result = db.prepare('INSERT INTO companias (nombre, activa) VALUES (?, 1)').run(req.body.nombre);
+    const idCompania = result.lastInsertRowid;
+    db.prepare('INSERT INTO clientes (idCompania, nombreCompleto, numeroTelefono) VALUES (?, ?, ?)').run(idCompania, 'Mostrador', '0000000000');
+    db.prepare('INSERT INTO empresa (idCompania, nombre, direccion, telefono, mensajePersonal) VALUES (?, ?, ?, ?, ?)').run(idCompania, '', '', '', '');
+    for (const medio of ['Efectivo', 'Tarjeta', 'Transferencia', 'Nequi']) {
+      db.prepare('INSERT OR IGNORE INTO medios_pago (idCompania, nombre, activo) VALUES (?, ?, 1)').run(idCompania, medio);
+    }
+    return idCompania;
+  });
+  const idCompania = crear();
+  res.status(201).json(db.prepare('SELECT * FROM companias WHERE idCompania = ?').get(idCompania));
 });
 
 app.post('/api/login', (req, res) => {
@@ -31,18 +55,18 @@ app.get('/api/productos', (req, res) => {
   const q = `%${req.query.q || ''}%`;
   const productos = db.prepare(`
     SELECT * FROM productos
-    WHERE descripcion LIKE ? OR codigoBarras LIKE ?
+    WHERE idCompania = ? AND (descripcion LIKE ? OR codigoBarras LIKE ?)
     ORDER BY descripcion
-  `).all(q, q);
+  `).all(companiaId(req), q, q);
   res.json(productos);
 });
 
 app.get('/api/productos/stock/:cantidad', (req, res) => {
-  res.json(db.prepare('SELECT * FROM productos WHERE existencia <= ? ORDER BY existencia ASC').all(numeric(req.params.cantidad)));
+  res.json(db.prepare('SELECT * FROM productos WHERE idCompania = ? AND existencia <= ? ORDER BY existencia ASC').all(companiaId(req), numeric(req.params.cantidad)));
 });
 
 app.get('/api/productos/codigo/:codigo', (req, res) => {
-  const producto = db.prepare('SELECT * FROM productos WHERE codigoBarras = ? OR idProducto = ?').get(req.params.codigo, numeric(req.params.codigo, -1));
+  const producto = db.prepare('SELECT * FROM productos WHERE idCompania = ? AND (codigoBarras = ? OR idProducto = ?)').get(companiaId(req), req.params.codigo, numeric(req.params.codigo, -1));
   if (!producto) return res.status(404).json({ error: 'Producto no encontrado' });
   res.json(producto);
 });
@@ -50,9 +74,10 @@ app.get('/api/productos/codigo/:codigo', (req, res) => {
 app.post('/api/productos', (req, res) => {
   requireFields(req.body, ['descripcion', 'precioCompra', 'precioVenta', 'existencia', 'stock']);
   const result = db.prepare(`
-    INSERT INTO productos (codigoBarras, descripcion, precioCompra, precioVenta, existencia, stock)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO productos (idCompania, codigoBarras, descripcion, precioCompra, precioVenta, existencia, stock)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
+    companiaId(req),
     req.body.codigoBarras || null,
     req.body.descripcion,
     numeric(req.body.precioCompra),
@@ -60,7 +85,7 @@ app.post('/api/productos', (req, res) => {
     numeric(req.body.existencia),
     numeric(req.body.stock)
   );
-  res.status(201).json(db.prepare('SELECT * FROM productos WHERE idProducto = ?').get(result.lastInsertRowid));
+  res.status(201).json(db.prepare('SELECT * FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), result.lastInsertRowid));
 });
 
 app.put('/api/productos/:id', (req, res) => {
@@ -68,7 +93,7 @@ app.put('/api/productos/:id', (req, res) => {
   db.prepare(`
     UPDATE productos
     SET codigoBarras = ?, descripcion = ?, precioCompra = ?, precioVenta = ?, existencia = ?, stock = ?
-    WHERE idProducto = ?
+    WHERE idCompania = ? AND idProducto = ?
   `).run(
     req.body.codigoBarras || null,
     req.body.descripcion,
@@ -76,13 +101,14 @@ app.put('/api/productos/:id', (req, res) => {
     numeric(req.body.precioVenta),
     numeric(req.body.existencia),
     numeric(req.body.stock),
+    companiaId(req),
     req.params.id
   );
-  res.json(db.prepare('SELECT * FROM productos WHERE idProducto = ?').get(req.params.id));
+  res.json(db.prepare('SELECT * FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), req.params.id));
 });
 
 app.delete('/api/productos/:id', (req, res) => {
-  db.prepare('DELETE FROM productos WHERE idProducto = ?').run(req.params.id);
+  db.prepare('DELETE FROM productos WHERE idCompania = ? AND idProducto = ?').run(companiaId(req), req.params.id);
   res.status(204).end();
 });
 
@@ -90,14 +116,14 @@ app.get('/api/clientes', (req, res) => {
   const q = `%${req.query.q || ''}%`;
   res.json(db.prepare(`
     SELECT * FROM clientes
-    WHERE nombreCompleto LIKE ? OR numeroTelefono LIKE ?
+    WHERE idCompania = ? AND (nombreCompleto LIKE ? OR numeroTelefono LIKE ?)
     ORDER BY nombreCompleto
-  `).all(q, q));
+  `).all(companiaId(req), q, q));
 });
 
 app.post('/api/clientes', (req, res) => {
   requireFields(req.body, ['nombreCompleto', 'numeroTelefono']);
-  const result = db.prepare('INSERT INTO clientes (nombreCompleto, numeroTelefono) VALUES (?, ?)').run(req.body.nombreCompleto, req.body.numeroTelefono);
+  const result = db.prepare('INSERT INTO clientes (idCompania, nombreCompleto, numeroTelefono) VALUES (?, ?, ?)').run(companiaId(req), req.body.nombreCompleto, req.body.numeroTelefono);
   res.status(201).json(db.prepare('SELECT * FROM clientes WHERE idCliente = ?').get(result.lastInsertRowid));
 });
 
@@ -116,17 +142,17 @@ app.get('/api/proveedores', (req, res) => {
   const q = `%${req.query.q || ''}%`;
   res.json(db.prepare(`
     SELECT * FROM proveedores
-    WHERE nombre LIKE ? OR numeroTelefono LIKE ? OR correo LIKE ?
+    WHERE idCompania = ? AND (nombre LIKE ? OR numeroTelefono LIKE ? OR correo LIKE ?)
     ORDER BY nombre
-  `).all(q, q, q));
+  `).all(companiaId(req), q, q, q));
 });
 
 app.post('/api/proveedores', (req, res) => {
   requireFields(req.body, ['nombre']);
   const result = db.prepare(`
-    INSERT INTO proveedores (nombre, numeroTelefono, correo, direccion)
-    VALUES (?, ?, ?, ?)
-  `).run(req.body.nombre, req.body.numeroTelefono || '', req.body.correo || '', req.body.direccion || '');
+    INSERT INTO proveedores (idCompania, nombre, numeroTelefono, correo, direccion)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(companiaId(req), req.body.nombre, req.body.numeroTelefono || '', req.body.correo || '', req.body.direccion || '');
   res.status(201).json(db.prepare('SELECT * FROM proveedores WHERE idProveedor = ?').get(result.lastInsertRowid));
 });
 
@@ -135,13 +161,13 @@ app.put('/api/proveedores/:id', (req, res) => {
   db.prepare(`
     UPDATE proveedores
     SET nombre = ?, numeroTelefono = ?, correo = ?, direccion = ?
-    WHERE idProveedor = ?
-  `).run(req.body.nombre, req.body.numeroTelefono || '', req.body.correo || '', req.body.direccion || '', req.params.id);
+    WHERE idCompania = ? AND idProveedor = ?
+  `).run(req.body.nombre, req.body.numeroTelefono || '', req.body.correo || '', req.body.direccion || '', companiaId(req), req.params.id);
   res.json(db.prepare('SELECT * FROM proveedores WHERE idProveedor = ?').get(req.params.id));
 });
 
 app.delete('/api/proveedores/:id', (req, res) => {
-  db.prepare('DELETE FROM proveedores WHERE idProveedor = ?').run(req.params.id);
+  db.prepare('DELETE FROM proveedores WHERE idCompania = ? AND idProveedor = ?').run(companiaId(req), req.params.id);
   res.status(204).end();
 });
 
@@ -166,18 +192,18 @@ app.get('/api/personas-financieras', (req, res) => {
       FROM subsanaciones_prestamos_aportes
       GROUP BY idMovimiento
     ) s ON s.idMovimiento = pa.idMovimiento
-    WHERE pf.nombre LIKE ? OR pf.relacion LIKE ?
+    WHERE pf.idCompania = ? AND (pf.nombre LIKE ? OR pf.relacion LIKE ?)
     GROUP BY pf.idPersonaFinanciera
     ORDER BY pf.nombre
-  `).all(q, q));
+  `).all(companiaId(req), q, q));
 });
 
 app.post('/api/personas-financieras', (req, res) => {
   requireFields(req.body, ['nombre', 'relacion']);
   const result = db.prepare(`
-    INSERT INTO personas_financieras (nombre, relacion, numeroTelefono, notas)
-    VALUES (?, ?, ?, ?)
-  `).run(req.body.nombre, req.body.relacion, req.body.numeroTelefono || '', req.body.notas || '');
+    INSERT INTO personas_financieras (idCompania, nombre, relacion, numeroTelefono, notas)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(companiaId(req), req.body.nombre, req.body.relacion, req.body.numeroTelefono || '', req.body.notas || '');
   res.status(201).json(db.prepare('SELECT * FROM personas_financieras WHERE idPersonaFinanciera = ?').get(result.lastInsertRowid));
 });
 
@@ -186,15 +212,15 @@ app.put('/api/personas-financieras/:id', (req, res) => {
   db.prepare(`
     UPDATE personas_financieras
     SET nombre = ?, relacion = ?, numeroTelefono = ?, notas = ?
-    WHERE idPersonaFinanciera = ?
-  `).run(req.body.nombre, req.body.relacion, req.body.numeroTelefono || '', req.body.notas || '', req.params.id);
+    WHERE idCompania = ? AND idPersonaFinanciera = ?
+  `).run(req.body.nombre, req.body.relacion, req.body.numeroTelefono || '', req.body.notas || '', companiaId(req), req.params.id);
   res.json(db.prepare('SELECT * FROM personas_financieras WHERE idPersonaFinanciera = ?').get(req.params.id));
 });
 
 app.delete('/api/personas-financieras/:id', (req, res) => {
   const usado = db.prepare('SELECT COUNT(*) total FROM prestamos_aportes WHERE idPersonaFinanciera = ?').get(req.params.id).total;
   if (usado > 0) return res.status(400).json({ error: 'No se puede eliminar una persona con movimientos registrados' });
-  db.prepare('DELETE FROM personas_financieras WHERE idPersonaFinanciera = ?').run(req.params.id);
+  db.prepare('DELETE FROM personas_financieras WHERE idCompania = ? AND idPersonaFinanciera = ?').run(companiaId(req), req.params.id);
   res.status(204).end();
 });
 
@@ -205,6 +231,8 @@ app.get('/api/prestamos-aportes', (req, res) => {
     where.push('pa.idPersonaFinanciera = ?');
     params.push(req.query.idPersonaFinanciera);
   }
+  where.push('pa.idCompania = ?');
+  params.push(companiaId(req));
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const movimientos = db.prepare(`
     SELECT pa.*, pf.nombre AS persona, pf.relacion, u.nombre AS usuario,
@@ -277,9 +305,9 @@ app.post('/api/prestamos-aportes', (req, res) => {
   if (monto <= 0) return res.status(400).json({ error: 'El monto debe ser mayor que cero' });
 
   const result = db.prepare(`
-    INSERT INTO prestamos_aportes (idPersonaFinanciera, tipo, monto, fecha, descripcion, idUsuario)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(req.body.idPersonaFinanciera, req.body.tipo, monto, nowSql(), req.body.descripcion || '', req.body.idUsuario);
+    INSERT INTO prestamos_aportes (idCompania, idPersonaFinanciera, tipo, monto, fecha, descripcion, idUsuario)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(companiaId(req), req.body.idPersonaFinanciera, req.body.tipo, monto, nowSql(), req.body.descripcion || '', req.body.idUsuario);
   res.status(201).json(db.prepare(`
     SELECT pa.*, pf.nombre AS persona, pf.relacion, u.nombre AS usuario
     FROM prestamos_aportes pa
@@ -404,73 +432,80 @@ app.get('/api/medios-pago', (req, res) => {
   const incluirInactivos = req.query.incluirInactivos === '1';
   const medios = db.prepare(`
     SELECT * FROM medios_pago
-    ${incluirInactivos ? '' : 'WHERE activo = 1'}
+    WHERE idCompania = ?
+    ${incluirInactivos ? '' : 'AND activo = 1'}
     ORDER BY nombre
-  `).all();
+  `).all(companiaId(req));
   res.json(medios);
 });
 
 app.post('/api/medios-pago', (req, res) => {
   requireFields(req.body, ['nombre']);
-  const result = db.prepare('INSERT INTO medios_pago (nombre, activo) VALUES (?, ?)').run(req.body.nombre, req.body.activo === false ? 0 : 1);
+  const result = db.prepare('INSERT INTO medios_pago (idCompania, nombre, activo) VALUES (?, ?, ?)').run(companiaId(req), req.body.nombre, req.body.activo === false ? 0 : 1);
   res.status(201).json(db.prepare('SELECT * FROM medios_pago WHERE idMedioPago = ?').get(result.lastInsertRowid));
 });
 
 app.put('/api/medios-pago/:id', (req, res) => {
   requireFields(req.body, ['nombre']);
-  db.prepare('UPDATE medios_pago SET nombre = ?, activo = ? WHERE idMedioPago = ?').run(req.body.nombre, req.body.activo === false || req.body.activo === 0 ? 0 : 1, req.params.id);
+  db.prepare('UPDATE medios_pago SET nombre = ?, activo = ? WHERE idCompania = ? AND idMedioPago = ?').run(req.body.nombre, req.body.activo === false || req.body.activo === 0 ? 0 : 1, companiaId(req), req.params.id);
   res.json(db.prepare('SELECT * FROM medios_pago WHERE idMedioPago = ?').get(req.params.id));
 });
 
 app.delete('/api/medios-pago/:id', (req, res) => {
   const usado = db.prepare('SELECT COUNT(*) total FROM pagos_ventas WHERE idMedioPago = ?').get(req.params.id).total;
   if (usado > 0) {
-    db.prepare('UPDATE medios_pago SET activo = 0 WHERE idMedioPago = ?').run(req.params.id);
+    db.prepare('UPDATE medios_pago SET activo = 0 WHERE idCompania = ? AND idMedioPago = ?').run(companiaId(req), req.params.id);
     return res.json(db.prepare('SELECT * FROM medios_pago WHERE idMedioPago = ?').get(req.params.id));
   }
-  db.prepare('DELETE FROM medios_pago WHERE idMedioPago = ?').run(req.params.id);
+  db.prepare('DELETE FROM medios_pago WHERE idCompania = ? AND idMedioPago = ?').run(companiaId(req), req.params.id);
   res.status(204).end();
 });
 
 app.get('/api/ajustes/empresa', (req, res) => {
-  res.json(db.prepare('SELECT * FROM empresa WHERE idEmpresa = 1').get());
+  let empresa = db.prepare('SELECT * FROM empresa WHERE idCompania = ? ORDER BY idEmpresa LIMIT 1').get(companiaId(req));
+  if (!empresa) {
+    const result = db.prepare('INSERT INTO empresa (idCompania, nombre, direccion, telefono, mensajePersonal) VALUES (?, ?, ?, ?, ?)').run(companiaId(req), '', '', '', '');
+    empresa = db.prepare('SELECT * FROM empresa WHERE idEmpresa = ?').get(result.lastInsertRowid);
+  }
+  res.json(empresa);
 });
 
 app.put('/api/ajustes/empresa', (req, res) => {
   db.prepare(`
     UPDATE empresa
     SET nombre = ?, direccion = ?, telefono = ?, mensajePersonal = ?
-    WHERE idEmpresa = 1
-  `).run(req.body.nombre || '', req.body.direccion || '', req.body.telefono || '', req.body.mensajePersonal || '');
-  res.json(db.prepare('SELECT * FROM empresa WHERE idEmpresa = 1').get());
+    WHERE idCompania = ?
+  `).run(req.body.nombre || '', req.body.direccion || '', req.body.telefono || '', req.body.mensajePersonal || '', companiaId(req));
+  res.json(db.prepare('SELECT * FROM empresa WHERE idCompania = ? ORDER BY idEmpresa LIMIT 1').get(companiaId(req)));
 });
 
 app.get('/api/caja/resumen', (req, res) => {
-  const ventas = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ventas_contado').get().total;
+  const idCompania = companiaId(req);
+  const ventas = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ventas_contado WHERE idCompania = ?').get(idCompania).total;
   const abonos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM abonos').get().total;
-  const ingresos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ingresos').get().total;
-  const egresos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM egresos').get().total;
-  const compras = db.prepare("SELECT COALESCE(SUM(pago), 0) total FROM compras").get().total;
+  const ingresos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ingresos WHERE idCompania = ?').get(idCompania).total;
+  const egresos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM egresos WHERE idCompania = ?').get(idCompania).total;
+  const compras = db.prepare("SELECT COALESCE(SUM(pago), 0) total FROM compras WHERE idCompania = ?").get(idCompania).total;
   const entradaPrestamosAportes = db.prepare(`
     SELECT COALESCE(SUM(monto), 0) total FROM (
-      SELECT monto FROM prestamos_aportes WHERE tipo IN ('APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
+      SELECT monto FROM prestamos_aportes WHERE idCompania = @idCompania AND tipo IN ('APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
       UNION ALL
       SELECT s.monto
       FROM subsanaciones_prestamos_aportes s
       INNER JOIN prestamos_aportes pa ON pa.idMovimiento = s.idMovimiento
-      WHERE pa.tipo IN ('RETIRO_DEL_NEGOCIO', 'PRESTAMO_DEL_NEGOCIO', 'DEVOLUCION_PAGADA')
+      WHERE pa.idCompania = @idCompania AND pa.tipo IN ('RETIRO_DEL_NEGOCIO', 'PRESTAMO_DEL_NEGOCIO', 'DEVOLUCION_PAGADA')
     )
-  `).get().total;
+  `).get({ idCompania }).total;
   const salidaPrestamosAportes = db.prepare(`
     SELECT COALESCE(SUM(monto), 0) total FROM (
-      SELECT monto FROM prestamos_aportes WHERE tipo IN ('RETIRO_DEL_NEGOCIO', 'PRESTAMO_DEL_NEGOCIO', 'DEVOLUCION_PAGADA')
+      SELECT monto FROM prestamos_aportes WHERE idCompania = @idCompania AND tipo IN ('RETIRO_DEL_NEGOCIO', 'PRESTAMO_DEL_NEGOCIO', 'DEVOLUCION_PAGADA')
       UNION ALL
       SELECT s.monto
       FROM subsanaciones_prestamos_aportes s
       INNER JOIN prestamos_aportes pa ON pa.idMovimiento = s.idMovimiento
-      WHERE pa.tipo IN ('APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
+      WHERE pa.idCompania = @idCompania AND pa.tipo IN ('APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
     )
-  `).get().total;
+  `).get({ idCompania }).total;
   res.json({
     ventas,
     abonos,
@@ -492,10 +527,11 @@ app.get('/api/compras', (req, res) => {
     INNER JOIN proveedores p ON p.idProveedor = c.idProveedor
     INNER JOIN usuarios u ON u.idUsuario = c.idUsuario
     LEFT JOIN productos_comprados pc ON pc.idCompra = c.idCompra
+    WHERE c.idCompania = ?
     GROUP BY c.idCompra
     ORDER BY c.idCompra DESC
     LIMIT 100
-  `).all();
+  `).all(companiaId(req));
   res.json(compras);
 });
 
@@ -505,8 +541,8 @@ app.get('/api/compras/:id', (req, res) => {
     FROM compras c
     INNER JOIN proveedores p ON p.idProveedor = c.idProveedor
     INNER JOIN usuarios u ON u.idUsuario = c.idUsuario
-    WHERE c.idCompra = ?
-  `).get(req.params.id);
+    WHERE c.idCompania = ? AND c.idCompra = ?
+  `).get(companiaId(req), req.params.id);
   if (!compra) return res.status(404).json({ error: 'Compra no encontrada' });
   const productos = db.prepare('SELECT * FROM productos_comprados WHERE idCompra = ? ORDER BY descripcion').all(req.params.id);
   res.json({ ...compra, productos });
@@ -531,7 +567,7 @@ app.post('/api/compras', (req, res) => {
         throw error;
       }
 
-      const producto = item.idProducto ? db.prepare('SELECT * FROM productos WHERE idProducto = ?').get(item.idProducto) : null;
+      const producto = item.idProducto ? db.prepare('SELECT * FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), item.idProducto) : null;
       if (item.idProducto && !producto) {
         const error = new Error(`Producto ${item.idProducto} no encontrado`);
         error.status = 404;
@@ -560,9 +596,9 @@ app.post('/api/compras', (req, res) => {
 
     const pago = numeric(req.body.pago, monto);
     const compra = db.prepare(`
-      INSERT INTO compras (monto, pago, fecha, idProveedor, idUsuario)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(monto, pago, nowSql(), req.body.idProveedor, req.body.idUsuario);
+      INSERT INTO compras (idCompania, monto, pago, fecha, fechaRegistro, idProveedor, idUsuario)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(companiaId(req), monto, pago, normalizeDateTimeInput(req.body.fechaMovimiento || req.body.fecha), nowSql(), req.body.idProveedor, req.body.idUsuario);
 
     const insertarProducto = db.prepare(`
       INSERT INTO productos_comprados (
@@ -594,7 +630,7 @@ app.post('/api/compras', (req, res) => {
   });
 
   const idCompra = crearCompra();
-  const compraCreada = db.prepare('SELECT * FROM compras WHERE idCompra = ?').get(idCompra);
+  const compraCreada = db.prepare('SELECT * FROM compras WHERE idCompania = ? AND idCompra = ?').get(companiaId(req), idCompra);
   const productos = db.prepare('SELECT * FROM productos_comprados WHERE idCompra = ?').all(idCompra);
   res.status(201).json({ ...compraCreada, productos });
 });
@@ -606,7 +642,7 @@ app.put('/api/compras/:id', (req, res) => {
   }
 
   const editarCompra = db.transaction(() => {
-    const compraActual = db.prepare('SELECT * FROM compras WHERE idCompra = ?').get(req.params.id);
+    const compraActual = db.prepare('SELECT * FROM compras WHERE idCompania = ? AND idCompra = ?').get(companiaId(req), req.params.id);
     if (!compraActual) {
       const error = new Error('Compra no encontrada');
       error.status = 404;
@@ -641,7 +677,7 @@ app.put('/api/compras/:id', (req, res) => {
         throw error;
       }
 
-      const producto = item.idProducto ? db.prepare('SELECT * FROM productos WHERE idProducto = ?').get(item.idProducto) : null;
+      const producto = item.idProducto ? db.prepare('SELECT * FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), item.idProducto) : null;
       if (item.idProducto && !producto) {
         const error = new Error(`Producto ${item.idProducto} no encontrado`);
         error.status = 404;
@@ -671,9 +707,9 @@ app.put('/api/compras/:id', (req, res) => {
     const pago = numeric(req.body.pago, monto);
     db.prepare(`
       UPDATE compras
-      SET monto = ?, pago = ?, idProveedor = ?, idUsuario = ?
-      WHERE idCompra = ?
-    `).run(monto, pago, req.body.idProveedor, req.body.idUsuario, req.params.id);
+      SET monto = ?, pago = ?, fecha = ?, idProveedor = ?, idUsuario = ?
+      WHERE idCompania = ? AND idCompra = ?
+    `).run(monto, pago, normalizeDateTimeInput(req.body.fechaMovimiento || req.body.fecha), req.body.idProveedor, req.body.idUsuario, companiaId(req), req.params.id);
 
     db.prepare('DELETE FROM productos_comprados WHERE idCompra = ?').run(req.params.id);
 
@@ -705,14 +741,14 @@ app.put('/api/compras/:id', (req, res) => {
   });
 
   editarCompra();
-  const compraEditada = db.prepare('SELECT * FROM compras WHERE idCompra = ?').get(req.params.id);
+  const compraEditada = db.prepare('SELECT * FROM compras WHERE idCompania = ? AND idCompra = ?').get(companiaId(req), req.params.id);
   const productos = db.prepare('SELECT * FROM productos_comprados WHERE idCompra = ?').all(req.params.id);
   res.json({ ...compraEditada, productos });
 });
 
 app.delete('/api/compras/:id', (req, res) => {
   const anularCompra = db.transaction(() => {
-    const compra = db.prepare('SELECT * FROM compras WHERE idCompra = ?').get(req.params.id);
+    const compra = db.prepare('SELECT * FROM compras WHERE idCompania = ? AND idCompra = ?').get(companiaId(req), req.params.id);
     if (!compra) {
       const error = new Error('Compra no encontrada');
       error.status = 404;
@@ -737,6 +773,69 @@ app.delete('/api/compras/:id', (req, res) => {
   res.status(204).end();
 });
 
+app.get('/api/pedidos-pendientes', (req, res) => {
+  const rows = db.prepare(`
+    SELECT v.idVenta, v.monto, v.pago, v.estadoPago, v.estadoPreparacion,
+           v.fecha, v.fechaRegistro, c.nombreCompleto AS cliente, u.nombre AS usuario,
+           pv.idProducto, pv.codigoBarras, pv.descripcion, pv.precioVenta, pv.cantidadVendida, pv.nota
+    FROM ventas_contado v
+    INNER JOIN clientes c ON c.idCliente = v.idCliente
+    INNER JOIN usuarios u ON u.idUsuario = v.idUsuario
+    LEFT JOIN productos_vendidos pv ON pv.idVenta = v.idVenta
+    WHERE v.idCompania = ? AND v.estadoPreparacion = 'PENDIENTE'
+    ORDER BY v.fecha ASC, v.idVenta ASC, pv.descripcion ASC
+  `).all(companiaId(req));
+
+  const pedidos = [];
+  const byId = new Map();
+  for (const row of rows) {
+    if (!byId.has(row.idVenta)) {
+      const pedido = {
+        idVenta: row.idVenta,
+        monto: row.monto,
+        pago: row.pago,
+        estadoPago: row.estadoPago,
+        estadoPreparacion: row.estadoPreparacion,
+        fecha: row.fecha,
+        fechaRegistro: row.fechaRegistro,
+        cliente: row.cliente,
+        usuario: row.usuario,
+        productos: []
+      };
+      byId.set(row.idVenta, pedido);
+      pedidos.push(pedido);
+    }
+
+    if (row.descripcion) {
+      byId.get(row.idVenta).productos.push({
+        idProducto: row.idProducto,
+        codigoBarras: row.codigoBarras,
+        descripcion: row.descripcion,
+        precioVenta: row.precioVenta,
+        cantidadVendida: row.cantidadVendida,
+        nota: row.nota || ''
+      });
+    }
+  }
+
+  res.json(pedidos);
+});
+
+app.post('/api/pedidos/:id/cumplido', (req, res) => {
+  const result = db.prepare(`
+    UPDATE ventas_contado
+    SET estadoPreparacion = 'CUMPLIDO', fechaCumplido = ?
+    WHERE idCompania = ? AND idVenta = ? AND estadoPreparacion = 'PENDIENTE'
+  `).run(nowSql(), companiaId(req), req.params.id);
+
+  if (result.changes === 0) {
+    const venta = db.prepare('SELECT idVenta FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id);
+    if (!venta) return res.status(404).json({ error: 'Pedido no encontrado' });
+  }
+
+  res.json(db.prepare('SELECT idVenta, estadoPreparacion, fechaCumplido FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id));
+});
+
 app.get('/api/ventas/contado', (req, res) => {
   const where = [];
   const params = [];
@@ -753,6 +852,8 @@ app.get('/api/ventas/contado', (req, res) => {
     where.push('v.idUsuario = ?');
     params.push(req.query.idUsuario);
   }
+  where.push('v.idCompania = ?');
+  params.push(companiaId(req));
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const limitSql = req.query.limite === 'todos' ? '' : 'LIMIT 100';
@@ -789,8 +890,8 @@ app.get('/api/ventas/contado/:id', (req, res) => {
     FROM ventas_contado v
     INNER JOIN clientes c ON c.idCliente = v.idCliente
     INNER JOIN usuarios u ON u.idUsuario = v.idUsuario
-    WHERE v.idVenta = ?
-  `).get(req.params.id);
+    WHERE v.idCompania = ? AND v.idVenta = ?
+  `).get(companiaId(req), req.params.id);
   if (!venta) return res.status(404).json({ error: 'Venta no encontrada' });
 
   const productos = db.prepare('SELECT * FROM productos_vendidos WHERE idVenta = ? ORDER BY descripcion').all(req.params.id);
@@ -822,7 +923,7 @@ app.post('/api/ventas/contado', (req, res) => {
         throw error;
       }
 
-      const producto = db.prepare('SELECT * FROM productos WHERE idProducto = ?').get(item.idProducto);
+      const producto = db.prepare('SELECT * FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), item.idProducto);
       if (!producto) {
         const error = new Error(`Producto ${item.idProducto} no encontrado`);
         error.status = 404;
@@ -836,7 +937,7 @@ app.post('/api/ventas/contado', (req, res) => {
 
       const precioVenta = numeric(item.precioVenta, producto.precioVenta);
       monto += precioVenta * cantidad;
-      productosVenta.push({ ...producto, cantidadVendida: cantidad, precioVenta });
+      productosVenta.push({ ...producto, cantidadVendida: cantidad, precioVenta, nota: String(item.nota || '').trim() });
     }
 
     const pagos = normalizarPagos(req.body.pagos, req.body.pago);
@@ -844,15 +945,15 @@ app.post('/api/ventas/contado', (req, res) => {
     const estadoPago = estadoPagoDesdeMontos(monto, pago);
 
     const venta = db.prepare(`
-      INSERT INTO ventas_contado (monto, pago, estadoPago, fecha, idCliente, idUsuario)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(monto, pago, estadoPago, nowSql(), req.body.idCliente, req.body.idUsuario);
+      INSERT INTO ventas_contado (idCompania, monto, pago, estadoPago, fecha, fechaRegistro, idCliente, idUsuario)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(companiaId(req), monto, pago, estadoPago, normalizeDateTimeInput(req.body.fechaMovimiento || req.body.fecha), nowSql(), req.body.idCliente, req.body.idUsuario);
 
     const insertarProducto = db.prepare(`
       INSERT INTO productos_vendidos (
         idProducto, codigoBarras, idVenta, descripcion, precioCompra,
-        precioVenta, precioVentaOriginal, cantidadVendida
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        precioVenta, precioVentaOriginal, cantidadVendida, nota
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const actualizarExistencia = db.prepare('UPDATE productos SET existencia = existencia - ? WHERE idProducto = ?');
     const insertarPago = db.prepare('INSERT INTO pagos_ventas (idVenta, idMedioPago, monto, referencia) VALUES (?, ?, ?, ?)');
@@ -866,7 +967,8 @@ app.post('/api/ventas/contado', (req, res) => {
         producto.precioCompra,
         producto.precioVenta,
         producto.precioVenta,
-        producto.cantidadVendida
+        producto.cantidadVendida,
+        producto.nota
       );
       actualizarExistencia.run(producto.cantidadVendida, producto.idProducto);
     }
@@ -885,7 +987,7 @@ app.post('/api/ventas/contado', (req, res) => {
   });
 
   const idVenta = crearVenta();
-  const ventaCreada = db.prepare('SELECT * FROM ventas_contado WHERE idVenta = ?').get(idVenta);
+  const ventaCreada = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), idVenta);
   const productos = db.prepare('SELECT * FROM productos_vendidos WHERE idVenta = ?').all(idVenta);
   res.status(201).json({ ...ventaCreada, productos, cambio: ventaCreada.pago - ventaCreada.monto });
 });
@@ -897,7 +999,7 @@ app.put('/api/ventas/contado/:id', (req, res) => {
   }
 
   const editarVenta = db.transaction(() => {
-    const ventaActual = db.prepare('SELECT * FROM ventas_contado WHERE idVenta = ?').get(req.params.id);
+    const ventaActual = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id);
     if (!ventaActual) {
       const error = new Error('Venta no encontrada');
       error.status = 404;
@@ -921,7 +1023,7 @@ app.put('/api/ventas/contado/:id', (req, res) => {
         throw error;
       }
 
-      const producto = db.prepare('SELECT * FROM productos WHERE idProducto = ?').get(item.idProducto);
+      const producto = db.prepare('SELECT * FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), item.idProducto);
       if (!producto) {
         const error = new Error(`Producto ${item.idProducto} no encontrado`);
         error.status = 404;
@@ -935,7 +1037,7 @@ app.put('/api/ventas/contado/:id', (req, res) => {
 
       const precioVenta = numeric(item.precioVenta, producto.precioVenta);
       monto += precioVenta * cantidad;
-      productosVenta.push({ ...producto, cantidadVendida: cantidad, precioVenta });
+      productosVenta.push({ ...producto, cantidadVendida: cantidad, precioVenta, nota: String(item.nota || '').trim() });
     }
 
     const pagos = normalizarPagos(req.body.pagos, req.body.pago);
@@ -944,9 +1046,9 @@ app.put('/api/ventas/contado/:id', (req, res) => {
 
     db.prepare(`
       UPDATE ventas_contado
-      SET monto = ?, pago = ?, estadoPago = ?, idCliente = ?, idUsuario = ?
-      WHERE idVenta = ?
-    `).run(monto, pago, estadoPago, req.body.idCliente, req.body.idUsuario, req.params.id);
+      SET monto = ?, pago = ?, estadoPago = ?, fecha = ?, idCliente = ?, idUsuario = ?
+      WHERE idCompania = ? AND idVenta = ?
+    `).run(monto, pago, estadoPago, normalizeDateTimeInput(req.body.fechaMovimiento || req.body.fecha), req.body.idCliente, req.body.idUsuario, companiaId(req), req.params.id);
 
     db.prepare('DELETE FROM productos_vendidos WHERE idVenta = ?').run(req.params.id);
     db.prepare('DELETE FROM pagos_ventas WHERE idVenta = ?').run(req.params.id);
@@ -954,8 +1056,8 @@ app.put('/api/ventas/contado/:id', (req, res) => {
     const insertarProducto = db.prepare(`
       INSERT INTO productos_vendidos (
         idProducto, codigoBarras, idVenta, descripcion, precioCompra,
-        precioVenta, precioVentaOriginal, cantidadVendida
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        precioVenta, precioVentaOriginal, cantidadVendida, nota
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const actualizarExistencia = db.prepare('UPDATE productos SET existencia = existencia - ? WHERE idProducto = ?');
     const insertarPago = db.prepare('INSERT INTO pagos_ventas (idVenta, idMedioPago, monto, referencia) VALUES (?, ?, ?, ?)');
@@ -969,7 +1071,8 @@ app.put('/api/ventas/contado/:id', (req, res) => {
         producto.precioCompra,
         producto.precioVenta,
         producto.precioVenta,
-        producto.cantidadVendida
+        producto.cantidadVendida,
+        producto.nota
       );
       actualizarExistencia.run(producto.cantidadVendida, producto.idProducto);
     }
@@ -986,7 +1089,7 @@ app.put('/api/ventas/contado/:id', (req, res) => {
   });
 
   editarVenta();
-  const ventaEditada = db.prepare('SELECT * FROM ventas_contado WHERE idVenta = ?').get(req.params.id);
+  const ventaEditada = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id);
   const productos = db.prepare('SELECT * FROM productos_vendidos WHERE idVenta = ?').all(req.params.id);
   res.json({ ...ventaEditada, productos, cambio: ventaEditada.pago - ventaEditada.monto });
 });
@@ -998,7 +1101,7 @@ app.post('/api/ventas/contado/:id/pagos', (req, res) => {
   }
 
   const registrarPagos = db.transaction(() => {
-    const venta = db.prepare('SELECT * FROM ventas_contado WHERE idVenta = ?').get(req.params.id);
+    const venta = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id);
     if (!venta) {
       const error = new Error('Venta no encontrada');
       error.status = 404;
@@ -1026,8 +1129,8 @@ app.post('/api/ventas/contado/:id/pagos', (req, res) => {
       nuevoPago += numeric(pagoItem.monto);
     }
 
-    db.prepare('UPDATE ventas_contado SET pago = ?, estadoPago = ? WHERE idVenta = ?')
-      .run(nuevoPago, estadoPagoDesdeMontos(venta.monto, nuevoPago), req.params.id);
+    db.prepare('UPDATE ventas_contado SET pago = ?, estadoPago = ? WHERE idCompania = ? AND idVenta = ?')
+      .run(nuevoPago, estadoPagoDesdeMontos(venta.monto, nuevoPago), companiaId(req), req.params.id);
   });
 
   registrarPagos();
@@ -1044,7 +1147,7 @@ app.post('/api/ventas/contado/:id/pagos', (req, res) => {
 
 app.delete('/api/ventas/contado/:id', (req, res) => {
   const anularVenta = db.transaction(() => {
-    const venta = db.prepare('SELECT * FROM ventas_contado WHERE idVenta = ?').get(req.params.id);
+    const venta = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id);
     if (!venta) {
       const error = new Error('Venta no encontrada');
       error.status = 404;

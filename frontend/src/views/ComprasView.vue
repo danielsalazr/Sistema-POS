@@ -17,6 +17,9 @@
               Al guardar se revierte el inventario anterior de la compra y se aplica el nuevo detalle.
             </v-alert>
             <v-row>
+              <v-col cols="12" md="4">
+                <v-text-field v-model="fechaMovimiento" label="Fecha del movimiento" type="date" />
+              </v-col>
               <v-col cols="12" md="5">
                 <v-autocomplete
                   v-model="proveedorSeleccionado"
@@ -110,7 +113,7 @@
               <v-col cols="12" md="8">
                 <div class="totals">
                   <div><span>Total compra</span><strong>{{ currency(total) }}</strong></div>
-                  <div><span>Saldo</span><strong>{{ currency(Math.max(total - pago, 0)) }}</strong></div>
+                  <div><span>Saldo</span><strong>{{ currency(saldoCompra) }}</strong></div>
                 </div>
               </v-col>
             </v-row>
@@ -130,7 +133,7 @@
       <v-col cols="12" lg="5">
         <v-card class="data-card" variant="flat" border>
           <v-card-title>Ultimas compras</v-card-title>
-          <v-data-table :headers="headers" :items="compras" :loading="cargandoCompras" item-value="idCompra" density="comfortable">
+          <v-data-table :key="historialKey" :headers="headers" :items="compras" :loading="cargandoCompras" item-value="idCompra" density="comfortable">
             <template #item.monto="{ item }">{{ currency(item.monto) }}</template>
             <template #item.fecha="{ item }">{{ formatDate(item.fecha) }}</template>
             <template #item.actions="{ item }">
@@ -155,7 +158,8 @@
           <v-list density="compact">
             <v-list-item title="Proveedor" :subtitle="detalle.proveedor" />
             <v-list-item title="Usuario" :subtitle="detalle.usuario" />
-            <v-list-item title="Fecha" :subtitle="formatDate(detalle.fecha)" />
+            <v-list-item title="Fecha del movimiento" :subtitle="formatDate(detalle.fecha)" />
+            <v-list-item title="Fecha de registro" :subtitle="formatDate(detalle.fechaRegistro)" />
           </v-list>
           <v-table density="comfortable">
             <thead>
@@ -186,6 +190,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue';
 import { api } from '../api.js';
+import { formatLocalDateTime, inputToSql, sqlToDateInput, todayDateInput } from '../dates.js';
 import { session } from '../session.js';
 
 const productos = ref([]);
@@ -197,6 +202,7 @@ const proveedorSeleccionado = ref(null);
 const busquedaProducto = ref('');
 const busquedaProveedor = ref('');
 const descripcionPendiente = ref('');
+const fechaMovimiento = ref(todayDateInput());
 const cantidadPendiente = ref(1);
 const costoPendiente = ref(0);
 const precioVentaPendiente = ref(0);
@@ -206,6 +212,7 @@ const cargandoProveedores = ref(false);
 const cargandoCompras = ref(false);
 const guardando = ref(false);
 const detalleDialog = ref(false);
+const historialKey = ref(0);
 const detalle = ref(null);
 const compraEditando = ref(null);
 const snackbar = ref({ visible: false, text: '', color: 'success' });
@@ -219,6 +226,7 @@ const headers = [
 ];
 
 const total = computed(() => carrito.value.reduce((sum, item) => sum + Number(item.precioCompra || 0) * Number(item.cantidadComprada || 0), 0));
+const saldoCompra = computed(() => Math.max(total.value - Number(pago.value || 0), 0));
 const puedeGuardar = computed(() => carrito.value.length > 0 && proveedorSeleccionado.value && Number(pago.value || 0) >= 0);
 const puedeAgregarItem = computed(() => productoPendiente.value || descripcionPendiente.value.trim());
 
@@ -227,7 +235,7 @@ function currency(value) {
 }
 
 function formatDate(value) {
-  return new Intl.DateTimeFormat('es-CO', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
+  return formatLocalDateTime(value);
 }
 
 function notify(text, color = 'success') {
@@ -256,8 +264,16 @@ async function loadHistorial() {
   cargandoCompras.value = true;
   try {
     compras.value = await api.get('/compras');
+    historialKey.value += 1;
   } finally {
     cargandoCompras.value = false;
+  }
+}
+
+async function refrescarCompras() {
+  await loadHistorial();
+  if (detalleDialog.value && detalle.value?.idCompra) {
+    detalle.value = await api.get(`/compras/${detalle.value.idCompra}`);
   }
 }
 
@@ -302,7 +318,14 @@ function limpiar() {
   carrito.value = [];
   pago.value = 0;
   productoPendiente.value = null;
+  proveedorSeleccionado.value = null;
+  busquedaProducto.value = '';
+  busquedaProveedor.value = '';
   descripcionPendiente.value = '';
+  cantidadPendiente.value = 1;
+  costoPendiente.value = 0;
+  precioVentaPendiente.value = 0;
+  fechaMovimiento.value = todayDateInput();
 }
 
 function cancelarEdicion() {
@@ -316,6 +339,7 @@ async function registrarCompra() {
     const payload = {
       idProveedor: proveedorSeleccionado.value.idProveedor,
       idUsuario: session.usuario.idUsuario,
+      fechaMovimiento: inputToSql(fechaMovimiento.value),
       pago: Number(pago.value),
       productos: carrito.value.map((item) => ({
         idProducto: item.idProducto,
@@ -332,7 +356,7 @@ async function registrarCompra() {
     notify(`Compra ${compra.idCompra} ${compraEditando.value ? 'actualizada' : 'registrada'}`);
     compraEditando.value = null;
     limpiar();
-    await Promise.all([buscarProductos(), loadHistorial()]);
+    await Promise.all([buscarProductos(), refrescarCompras()]);
   } catch (err) {
     notify(err.message, 'error');
   } finally {
@@ -366,6 +390,7 @@ async function editarCompra(compra) {
       precioVenta: producto.precioVenta
     }));
     pago.value = compraCompleta.pago;
+    fechaMovimiento.value = sqlToDateInput(compraCompleta.fecha);
     detalleDialog.value = false;
     notify(`Compra ${compraCompleta.idCompra} cargada para edicion`, 'info');
   } catch (err) {
@@ -377,7 +402,7 @@ async function anularCompra(compra) {
   try {
     await api.delete(`/compras/${compra.idCompra}`);
     notify(`Compra ${compra.idCompra} anulada`);
-    await Promise.all([buscarProductos(), loadHistorial()]);
+    await Promise.all([buscarProductos(), refrescarCompras()]);
   } catch (err) {
     notify(err.message, 'error');
   }
