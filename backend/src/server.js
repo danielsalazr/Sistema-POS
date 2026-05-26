@@ -1,10 +1,12 @@
 import cors from 'cors';
+import { spawn } from 'node:child_process';
 import express from 'express';
 import { db } from './db.js';
 import { normalizeDateTimeInput, nowSql, numeric, requireFields } from './utils.js';
 
 const app = express();
 const port = process.env.PORT || 3020;
+const printerName = process.env.POS_PRINTER || 'EPSON_TM_T20II';
 
 app.use(cors());
 app.use(express.json());
@@ -905,6 +907,18 @@ app.get('/api/ventas/contado/:id', (req, res) => {
   res.json({ ...venta, productos, pagos });
 });
 
+app.post('/api/ventas/contado/:id/imprimir', async (req, res, next) => {
+  try {
+    const venta = ventaCompleta(companiaId(req), req.params.id);
+    if (!venta) return res.status(404).json({ error: 'Venta no encontrada' });
+    const ticket = generarTicketVenta(venta, companiaId(req));
+    await imprimirTexto(ticket);
+    res.json({ ok: true, impresora: printerName });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.post('/api/ventas/contado', (req, res) => {
   requireFields(req.body, ['idCliente', 'idUsuario', 'productos']);
   if (!Array.isArray(req.body.productos) || req.body.productos.length === 0) {
@@ -1204,6 +1218,155 @@ function estadoPagoDesdeMontos(monto, pago) {
   if (pago <= 0) return 'PENDIENTE';
   if (pago < monto) return 'PARCIAL';
   return 'PAGADA';
+}
+
+function ventaCompleta(idCompania, idVenta) {
+  const venta = db.prepare(`
+    SELECT v.*, (v.monto - v.pago) AS saldo, c.nombreCompleto AS cliente, c.numeroTelefono, u.nombre AS usuario
+    FROM ventas_contado v
+    INNER JOIN clientes c ON c.idCliente = v.idCliente
+    INNER JOIN usuarios u ON u.idUsuario = v.idUsuario
+    WHERE v.idCompania = ? AND v.idVenta = ?
+  `).get(idCompania, idVenta);
+  if (!venta) return null;
+
+  const productos = db.prepare('SELECT * FROM productos_vendidos WHERE idVenta = ? ORDER BY descripcion').all(idVenta);
+  const pagos = db.prepare(`
+    SELECT pv.*, mp.nombre AS medioPago
+    FROM pagos_ventas pv
+    INNER JOIN medios_pago mp ON mp.idMedioPago = pv.idMedioPago
+    WHERE pv.idVenta = ?
+    ORDER BY pv.idPagoVenta
+  `).all(idVenta);
+  return { ...venta, productos, pagos };
+}
+
+function generarTicketVenta(venta, idCompania) {
+  const empresa = db.prepare('SELECT * FROM empresa WHERE idCompania = ? ORDER BY idEmpresa LIMIT 1').get(idCompania) || {};
+  const nombreEmpresa = (empresa.nombre || 'Dela Crepes').trim();
+  const telefono = (empresa.telefono || '').trim();
+  const direccion = (empresa.direccion || '').trim();
+  const mensaje = (empresa.mensajePersonal || 'Gracias por tu compra').trim();
+  const width = 42;
+  const line = '='.repeat(width);
+  const dash = '-'.repeat(width);
+  const rows = [];
+
+  rows.push(line);
+  rows.push(center(nombreEmpresa.toUpperCase(), width));
+  rows.push(center('Dela POS', width));
+  if (telefono) rows.push(center(telefono, width));
+  if (direccion) rows.push(center(direccion, width));
+  rows.push(line);
+  rows.push(`Venta: ${String(venta.idVenta).padStart(6, '0')}`);
+  rows.push(`Fecha mov.: ${formatTicketDate(venta.fecha)}`);
+  rows.push(`Fecha reg.: ${formatTicketDate(venta.fechaRegistro)}`);
+  rows.push(`Cliente: ${venta.cliente}`);
+  rows.push(`Atendio: ${venta.usuario}`);
+  rows.push(dash);
+  rows.push(`${'PRODUCTO'.padEnd(25)}${'CANT'.padStart(5)}${'TOTAL'.padStart(12)}`);
+  rows.push(dash);
+
+  for (const producto of venta.productos) {
+    const cantidad = Number(producto.cantidadVendida || 0);
+    const total = Number(producto.precioVenta || 0) * cantidad;
+    const wrapped = wrapText(producto.descripcion, 25);
+    rows.push(`${wrapped[0].padEnd(25)}${formatQty(cantidad).padStart(5)}${formatMoney(total).padStart(12)}`);
+    for (const extraLine of wrapped.slice(1)) rows.push(extraLine);
+    if (producto.nota) rows.push(`  Nota: ${producto.nota}`);
+    rows.push('');
+  }
+
+  rows.push(dash);
+  rows.push(labelMoney('Subtotal', venta.monto, width));
+  rows.push(labelMoney('Pagado', venta.pago, width));
+  rows.push(labelMoney('Cambio', Math.max(Number(venta.pago || 0) - Number(venta.monto || 0), 0), width));
+  rows.push(labelMoney('Saldo', Math.max(Number(venta.monto || 0) - Number(venta.pago || 0), 0), width));
+
+  if (venta.pagos?.length) {
+    rows.push(dash);
+    rows.push('Pago:');
+    for (const pago of venta.pagos) rows.push(labelMoney(pago.medioPago || 'Pago', pago.monto, width));
+  }
+
+  rows.push(line);
+  rows.push(center(mensaje, width));
+  rows.push(line);
+  rows.push('\n\n\n');
+
+  return `${rows.join('\n')}\x1dV\x00`;
+}
+
+function imprimirTexto(texto) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('lp', ['-d', printerName], { stdio: ['pipe', 'ignore', 'pipe'] });
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (err) => {
+      err.status = 500;
+      err.message = `No se pudo ejecutar lp: ${err.message}`;
+      reject(err);
+    });
+    child.on('close', (code) => {
+      if (code === 0) return resolve();
+      const err = new Error(stderr.trim() || `lp termino con codigo ${code}`);
+      err.status = 500;
+      reject(err);
+    });
+
+    child.stdin.write(texto, 'binary');
+    child.stdin.end();
+  });
+}
+
+function center(text, width) {
+  const value = String(text || '').slice(0, width);
+  const left = Math.max(Math.floor((width - value.length) / 2), 0);
+  return `${' '.repeat(left)}${value}`;
+}
+
+function wrapText(text, width) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    if (!current) {
+      current = word;
+    } else if (`${current} ${word}`.length <= width) {
+      current = `${current} ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [''];
+}
+
+function formatQty(value) {
+  const number = Number(value || 0);
+  return Number.isInteger(number) ? String(number) : number.toFixed(2);
+}
+
+function formatMoney(value) {
+  return new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 }).format(Number(value || 0));
+}
+
+function labelMoney(label, value, width) {
+  const amount = formatMoney(value);
+  return `${String(label).padEnd(width - amount.length)}${amount}`;
+}
+
+function formatTicketDate(value) {
+  if (!value) return '';
+  const [datePart, timePart = ''] = String(value).replace('T', ' ').split(' ');
+  const [year, month, day] = datePart.split('-');
+  const [hour = '00', minute = '00'] = timePart.split(':');
+  if (!year || !month || !day) return String(value);
+  return `${day}/${month}/${year} ${hour}:${minute}`;
 }
 
 app.listen(port, () => {

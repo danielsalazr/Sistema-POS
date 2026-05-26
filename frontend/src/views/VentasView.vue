@@ -252,7 +252,7 @@
         <v-card-title class="d-flex align-center">
           <span>Venta {{ detalle?.idVenta }}</span>
           <v-spacer />
-          <v-btn icon="mdi-printer" variant="text" @click="imprimirTicket" />
+          <v-btn icon="mdi-printer" variant="text" :loading="imprimiendoTicket" @click="imprimirTicket" />
           <v-btn icon="mdi-pencil" variant="text" @click="editarVenta(detalle)" />
           <v-btn icon="mdi-close" variant="text" @click="detalleDialog = false" />
         </v-card-title>
@@ -391,6 +391,7 @@ const cargandoProductos = ref(false);
 const cargandoClientes = ref(false);
 const cargandoVentas = ref(false);
 const guardando = ref(false);
+const imprimiendoTicket = ref(false);
 const detalleDialog = ref(false);
 const pagoDialog = ref(false);
 const historialKey = ref(0);
@@ -581,6 +582,7 @@ async function registrarVenta() {
       ? await api.put(`/ventas/contado/${ventaEditando.value.idVenta}`, payload)
       : await api.post('/ventas/contado', payload);
     notify(`Venta ${venta.idVenta} ${ventaEditando.value ? 'actualizada' : 'registrada'}. Cambio: ${currency(venta.cambio)}`);
+    if (!ventaEditando.value) await imprimirVenta(venta.idVenta, false);
     ventaEditando.value = null;
     limpiarVenta();
     await Promise.all([buscarProductos(), refrescarVentas()]);
@@ -620,59 +622,21 @@ async function verDetalle(venta) {
   }
 }
 
-function imprimirTicket() {
+async function imprimirVenta(idVenta, showSuccess = true) {
+  imprimiendoTicket.value = true;
+  try {
+    await api.post(`/ventas/contado/${idVenta}/imprimir`, {});
+    if (showSuccess) notify(`Ticket de venta ${idVenta} enviado a impresora`);
+  } catch (err) {
+    notify(`Venta guardada, pero no se pudo imprimir: ${err.message}`, 'error');
+  } finally {
+    imprimiendoTicket.value = false;
+  }
+}
+
+async function imprimirTicket() {
   if (!detalle.value) return;
-  const filas = detalle.value.productos.map((producto) => `
-    <tr>
-      <td>${producto.descripcion}</td>
-      <td>${producto.nota ? `<strong>${producto.nota}</strong>` : ''}</td>
-      <td class="right">${producto.cantidadVendida}</td>
-      <td class="right">${currency(producto.precioVenta)}</td>
-      <td class="right">${currency(producto.precioVenta * producto.cantidadVendida)}</td>
-    </tr>
-  `).join('');
-  const html = `
-    <!doctype html>
-    <html>
-      <head>
-        <title>Venta ${detalle.value.idVenta}</title>
-        <style>
-          body { font-family: Arial, sans-serif; width: 280px; margin: 0; padding: 12px; color: #111; }
-          h1 { font-size: 16px; margin: 0 0 6px; text-align: center; }
-          p { margin: 2px 0; font-size: 12px; }
-          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
-          th, td { padding: 4px 0; border-bottom: 1px dashed #bbb; vertical-align: top; }
-          .right { text-align: right; }
-          .totals { margin-top: 10px; font-size: 13px; }
-          .totals div { display: flex; justify-content: space-between; margin: 3px 0; }
-        </style>
-      </head>
-      <body>
-        <h1>Sublime POS</h1>
-        <p>Venta: ${detalle.value.idVenta}</p>
-        <p>Fecha movimiento: ${formatDate(detalle.value.fecha)}</p>
-        <p>Fecha registro: ${formatDate(detalle.value.fechaRegistro)}</p>
-        <p>Cliente: ${detalle.value.cliente}</p>
-        <p>Usuario: ${detalle.value.usuario}</p>
-        <p>Pago: ${(detalle.value.pagos || []).map((pagoItem) => `${pagoItem.medioPago} ${currency(pagoItem.monto)}`).join(' / ')}</p>
-        <table>
-          <thead>
-            <tr><th>Producto</th><th>Nota</th><th class="right">Cant.</th><th class="right">P.Unit</th><th class="right">Subtotal</th></tr>
-          </thead>
-          <tbody>${filas}</tbody>
-        </table>
-        <div class="totals">
-          <div><span>Total</span><strong>${currency(detalle.value.monto)}</strong></div>
-          <div><span>Pago</span><strong>${currency(detalle.value.pago)}</strong></div>
-          <div><span>Saldo</span><strong>${currency(Math.max(detalle.value.monto - detalle.value.pago, 0))}</strong></div>
-        </div>
-        <script>window.print(); window.close();<\/script>
-      </body>
-    </html>
-  `;
-  const printWindow = window.open('', '_blank', 'width=360,height=640');
-  printWindow.document.write(html);
-  printWindow.document.close();
+  await imprimirVenta(detalle.value.idVenta);
 }
 
 async function editarVenta(venta) {
