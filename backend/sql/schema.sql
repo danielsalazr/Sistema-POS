@@ -221,7 +221,8 @@ CREATE TABLE IF NOT EXISTS empresa (
 
 CREATE TABLE IF NOT EXISTS comun (
   clave TEXT PRIMARY KEY,
-  valor TEXT
+  valor TEXT,
+  idCompania INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idVenta_indice ON productos_vendidos (idVenta);

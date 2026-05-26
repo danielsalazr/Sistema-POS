@@ -481,6 +481,25 @@ app.put('/api/ajustes/empresa', (req, res) => {
   res.json(db.prepare('SELECT * FROM empresa WHERE idCompania = ? ORDER BY idEmpresa LIMIT 1').get(companiaId(req)));
 });
 
+app.get('/api/ajustes/impresion', (req, res) => {
+  res.json(getPrintSettings(companiaId(req)));
+});
+
+app.put('/api/ajustes/impresion', (req, res) => {
+  const width = Math.min(Math.max(numeric(req.body.width, 35), 28), 48);
+  const settings = {
+    width,
+    imprimirTicketCliente: req.body.imprimirTicketCliente === false || req.body.imprimirTicketCliente === 0 ? false : true,
+    imprimirComandaCocina: req.body.imprimirComandaCocina === true || req.body.imprimirComandaCocina === 1
+  };
+
+  setCompanySetting(companiaId(req), 'IMPRESION_WIDTH', String(settings.width));
+  setCompanySetting(companiaId(req), 'IMPRESION_TICKET_CLIENTE', settings.imprimirTicketCliente ? '1' : '0');
+  setCompanySetting(companiaId(req), 'IMPRESION_COMANDA_COCINA', settings.imprimirComandaCocina ? '1' : '0');
+
+  res.json(settings);
+});
+
 app.get('/api/caja/resumen', (req, res) => {
   const idCompania = companiaId(req);
   const ventas = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ventas_contado WHERE idCompania = ?').get(idCompania).total;
@@ -909,11 +928,22 @@ app.get('/api/ventas/contado/:id', (req, res) => {
 
 app.post('/api/ventas/contado/:id/imprimir', async (req, res, next) => {
   try {
-    const venta = ventaCompleta(companiaId(req), req.params.id);
+    const idCompania = companiaId(req);
+    const venta = ventaCompleta(idCompania, req.params.id);
     if (!venta) return res.status(404).json({ error: 'Venta no encontrada' });
-    const ticket = generarTicketVenta(venta, companiaId(req));
-    await imprimirTexto(ticket);
-    res.json({ ok: true, impresora: printerName });
+    const settings = getPrintSettings(idCompania);
+    const impresiones = [];
+
+    if (settings.imprimirTicketCliente) {
+      await imprimirTexto(generarTicketVenta(venta, idCompania, settings));
+      impresiones.push('ticket_cliente');
+    }
+    if (settings.imprimirComandaCocina) {
+      await imprimirTexto(generarComandaCocina(venta, settings));
+      impresiones.push('comanda_cocina');
+    }
+
+    res.json({ ok: true, impresora: printerName, impresiones });
   } catch (err) {
     next(err);
   }
@@ -1241,13 +1271,35 @@ function ventaCompleta(idCompania, idVenta) {
   return { ...venta, productos, pagos };
 }
 
-function generarTicketVenta(venta, idCompania) {
+function getCompanySetting(idCompania, clave, fallback) {
+  const row = db.prepare('SELECT valor FROM comun WHERE clave = ?').get(`${clave}_${idCompania}`);
+  return row?.valor ?? fallback;
+}
+
+function setCompanySetting(idCompania, clave, valor) {
+  db.prepare(`
+    INSERT INTO comun (clave, valor, idCompania)
+    VALUES (?, ?, ?)
+    ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, idCompania = excluded.idCompania
+  `).run(`${clave}_${idCompania}`, String(valor), idCompania);
+}
+
+function getPrintSettings(idCompania) {
+  return {
+    width: Math.min(Math.max(numeric(getCompanySetting(idCompania, 'IMPRESION_WIDTH', '35'), 35), 28), 48),
+    imprimirTicketCliente: getCompanySetting(idCompania, 'IMPRESION_TICKET_CLIENTE', '1') === '1',
+    imprimirComandaCocina: getCompanySetting(idCompania, 'IMPRESION_COMANDA_COCINA', '0') === '1'
+  };
+}
+
+function generarTicketVenta(venta, idCompania, settings = getPrintSettings(idCompania)) {
   const empresa = db.prepare('SELECT * FROM empresa WHERE idCompania = ? ORDER BY idEmpresa LIMIT 1').get(idCompania) || {};
   const nombreEmpresa = (empresa.nombre || 'Dela Crepes').trim();
   const telefono = (empresa.telefono || '').trim();
   const direccion = (empresa.direccion || '').trim();
   const mensaje = (empresa.mensajePersonal || 'Gracias por tu compra').trim();
-  const width = 42;
+  const width = settings.width;
+  const productWidth = Math.max(width - 17, 12);
   const line = '='.repeat(width);
   const dash = '-'.repeat(width);
   const rows = [];
@@ -1264,14 +1316,14 @@ function generarTicketVenta(venta, idCompania) {
   rows.push(`Cliente: ${venta.cliente}`);
   rows.push(`Atendio: ${venta.usuario}`);
   rows.push(dash);
-  rows.push(`${'PRODUCTO'.padEnd(25)}${'CANT'.padStart(5)}${'TOTAL'.padStart(12)}`);
+  rows.push(`${'PRODUCTO'.padEnd(productWidth)}${'CANT'.padStart(5)}${'TOTAL'.padStart(12)}`);
   rows.push(dash);
 
   for (const producto of venta.productos) {
     const cantidad = Number(producto.cantidadVendida || 0);
     const total = Number(producto.precioVenta || 0) * cantidad;
-    const wrapped = wrapText(producto.descripcion, 25);
-    rows.push(`${wrapped[0].padEnd(25)}${formatQty(cantidad).padStart(5)}${formatMoney(total).padStart(12)}`);
+    const wrapped = wrapText(producto.descripcion, productWidth);
+    rows.push(`${wrapped[0].padEnd(productWidth)}${formatQty(cantidad).padStart(5)}${formatMoney(total).padStart(12)}`);
     for (const extraLine of wrapped.slice(1)) rows.push(extraLine);
     if (producto.nota) rows.push(`  Nota: ${producto.nota}`);
     rows.push('');
@@ -1294,6 +1346,36 @@ function generarTicketVenta(venta, idCompania) {
   rows.push(line);
   rows.push('\n\n\n');
 
+  return `${rows.join('\n')}\x1dV\x00`;
+}
+
+function generarComandaCocina(venta, settings = { width: 35 }) {
+  const width = settings.width;
+  const line = '*'.repeat(width);
+  const dash = '-'.repeat(width);
+  const rows = [];
+
+  rows.push(line);
+  rows.push(center('COCINA', width));
+  rows.push(line);
+  rows.push(`Venta: ${String(venta.idVenta).padStart(6, '0')}`);
+  rows.push(`Hora: ${formatTicketDate(venta.fecha)}`);
+  rows.push(`Cliente: ${venta.cliente}`);
+  rows.push(dash);
+
+  for (const producto of venta.productos) {
+    const cantidad = formatQty(producto.cantidadVendida);
+    const lines = wrapText(`${cantidad} x ${producto.descripcion}`, width);
+    rows.push(...lines);
+    if (producto.nota) {
+      const noteLines = wrapText(producto.nota.toUpperCase(), width - 4);
+      for (const noteLine of noteLines) rows.push(`    ${noteLine}`);
+    }
+    rows.push('');
+  }
+
+  rows.push(dash);
+  rows.push('\n\n\n');
   return `${rows.join('\n')}\x1dV\x00`;
 }
 
@@ -1357,7 +1439,7 @@ function formatMoney(value) {
 
 function labelMoney(label, value, width) {
   const amount = formatMoney(value);
-  return `${String(label).padEnd(width - amount.length)}${amount}`;
+  return `${String(label).padEnd(Math.max(width - amount.length, 1))}${amount}`;
 }
 
 function formatTicketDate(value) {
