@@ -85,7 +85,7 @@
                 <tr v-if="carrito.length === 0">
                   <td colspan="5" class="empty-row">Agrega productos para registrar la compra.</td>
                 </tr>
-                <tr v-for="item in carrito" :key="item.idProducto">
+                <tr v-for="(item, index) in carrito" :key="item.lineaId">
                   <td>
                     <div>{{ item.descripcion }}</div>
                     <div class="text-caption text-medium-emphasis">{{ item.idProducto ? 'Inventario' : 'Insumo libre' }}</div>
@@ -96,7 +96,7 @@
                   </td>
                   <td class="text-right">{{ currency(item.precioCompra * item.cantidadComprada) }}</td>
                   <td class="text-right">
-                    <v-btn icon="mdi-delete" color="error" size="small" variant="text" @click="quitarProducto(item)" />
+                    <v-btn icon="mdi-delete" color="error" size="small" variant="text" @click="quitarProducto(index)" />
                   </td>
                 </tr>
               </tbody>
@@ -171,7 +171,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="producto in detalle.productos" :key="producto.idProducto">
+              <tr v-for="(producto, index) in detalle.productos" :key="`${producto.idProducto || 'libre'}-${producto.descripcion}-${index}`">
                 <td>{{ producto.descripcion }}</td>
                 <td class="text-right">{{ producto.cantidadComprada }}</td>
                 <td class="text-right">{{ currency(producto.precioCompra) }}</td>
@@ -216,6 +216,7 @@ const historialKey = ref(0);
 const detalle = ref(null);
 const compraEditando = ref(null);
 const snackbar = ref({ visible: false, text: '', color: 'success' });
+let nextLineaId = 1;
 
 const headers = [
   { title: 'Folio', key: 'idCompra' },
@@ -289,6 +290,7 @@ async function agregarProductoPendiente() {
     existente.precioVenta = Number(precioVentaPendiente.value || existente.precioVenta);
   } else {
     carrito.value.push({
+      lineaId: nextLineaId++,
       idProducto,
       codigoBarras: productoPendiente.value?.codigoBarras || '',
       descripcion,
@@ -307,8 +309,8 @@ async function agregarProductoPendiente() {
   pago.value = total.value;
 }
 
-function quitarProducto(producto) {
-  carrito.value = carrito.value.filter((item) => item.idProducto !== producto.idProducto);
+function quitarProducto(index) {
+  carrito.value.splice(index, 1);
   nextTick(() => {
     pago.value = total.value;
   });
@@ -382,6 +384,7 @@ async function editarCompra(compra) {
       nombre: compraCompleta.proveedor
     };
     carrito.value = compraCompleta.productos.map((producto) => ({
+      lineaId: nextLineaId++,
       idProducto: producto.idProducto,
       codigoBarras: producto.codigoBarras || '',
       descripcion: producto.descripcion,

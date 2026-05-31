@@ -502,11 +502,13 @@ app.put('/api/ajustes/impresion', (req, res) => {
 
 app.get('/api/caja/resumen', (req, res) => {
   const idCompania = companiaId(req);
-  const ventas = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ventas_contado WHERE idCompania = ?').get(idCompania).total;
+  const ventasGeneradas = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ventas_contado WHERE idCompania = ?').get(idCompania).total;
+  const ventasCobradas = db.prepare('SELECT COALESCE(SUM(pago), 0) total FROM ventas_contado WHERE idCompania = ?').get(idCompania).total;
   const abonos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM abonos').get().total;
   const ingresos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ingresos WHERE idCompania = ?').get(idCompania).total;
   const egresos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM egresos WHERE idCompania = ?').get(idCompania).total;
-  const compras = db.prepare("SELECT COALESCE(SUM(pago), 0) total FROM compras WHERE idCompania = ?").get(idCompania).total;
+  const comprasGeneradas = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM compras WHERE idCompania = ?').get(idCompania).total;
+  const comprasPagadas = db.prepare('SELECT COALESCE(SUM(pago), 0) total FROM compras WHERE idCompania = ?').get(idCompania).total;
   const entradaPrestamosAportes = db.prepare(`
     SELECT COALESCE(SUM(monto), 0) total FROM (
       SELECT monto FROM prestamos_aportes WHERE idCompania = @idCompania AND tipo IN ('APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
@@ -527,15 +529,26 @@ app.get('/api/caja/resumen', (req, res) => {
       WHERE pa.idCompania = @idCompania AND pa.tipo IN ('APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
     )
   `).get({ idCompania }).total;
+  const totalCaja = ventasCobradas + abonos + ingresos + entradaPrestamosAportes - egresos - comprasPagadas - salidaPrestamosAportes;
+  const balanceSistema = ventasGeneradas + abonos + ingresos + entradaPrestamosAportes - egresos - comprasGeneradas - salidaPrestamosAportes;
+  const pendientePorMover = balanceSistema - totalCaja;
+
   res.json({
-    ventas,
+    ventas: ventasCobradas,
+    ventasCobradas,
+    ventasGeneradas,
     abonos,
     ingresos,
     egresos,
-    compras,
+    compras: comprasPagadas,
+    comprasPagadas,
+    comprasGeneradas,
     entradaPrestamosAportes,
     salidaPrestamosAportes,
-    total: ventas + abonos + ingresos + entradaPrestamosAportes - egresos - compras - salidaPrestamosAportes
+    total: totalCaja,
+    totalCaja,
+    balanceSistema,
+    pendientePorMover
   });
 });
 
@@ -984,8 +997,9 @@ app.post('/api/ventas/contado', (req, res) => {
       productosVenta.push({ ...producto, cantidadVendida: cantidad, precioVenta, nota: String(item.nota || '').trim() });
     }
 
-    const pagos = normalizarPagos(req.body.pagos, req.body.pago);
-    const pago = pagos.reduce((sum, item) => sum + numeric(item.monto), 0);
+    const pagoAplicado = ajustarPagosAlMonto(normalizarPagos(req.body.pagos, req.body.pago), monto);
+    const pagos = pagoAplicado.pagos;
+    const pago = pagoAplicado.pago;
     const estadoPago = estadoPagoDesdeMontos(monto, pago);
 
     const venta = db.prepare(`
@@ -1027,13 +1041,14 @@ app.post('/api/ventas/contado', (req, res) => {
       insertarPago.run(venta.lastInsertRowid, pagoItem.idMedioPago, numeric(pagoItem.monto), pagoItem.referencia || null);
     }
 
-    return venta.lastInsertRowid;
+    return { idVenta: venta.lastInsertRowid, cambio: pagoAplicado.cambio };
   });
 
-  const idVenta = crearVenta();
+  const resultadoVenta = crearVenta();
+  const idVenta = resultadoVenta.idVenta;
   const ventaCreada = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), idVenta);
   const productos = db.prepare('SELECT * FROM productos_vendidos WHERE idVenta = ?').all(idVenta);
-  res.status(201).json({ ...ventaCreada, productos, cambio: ventaCreada.pago - ventaCreada.monto });
+  res.status(201).json({ ...ventaCreada, productos, cambio: resultadoVenta.cambio });
 });
 
 app.put('/api/ventas/contado/:id', (req, res) => {
@@ -1084,8 +1099,9 @@ app.put('/api/ventas/contado/:id', (req, res) => {
       productosVenta.push({ ...producto, cantidadVendida: cantidad, precioVenta, nota: String(item.nota || '').trim() });
     }
 
-    const pagos = normalizarPagos(req.body.pagos, req.body.pago);
-    const pago = pagos.reduce((sum, item) => sum + numeric(item.monto), 0);
+    const pagoAplicado = ajustarPagosAlMonto(normalizarPagos(req.body.pagos, req.body.pago), monto);
+    const pagos = pagoAplicado.pagos;
+    const pago = pagoAplicado.pago;
     const estadoPago = estadoPagoDesdeMontos(monto, pago);
 
     db.prepare(`
@@ -1130,12 +1146,14 @@ app.put('/api/ventas/contado/:id', (req, res) => {
       }
       insertarPago.run(req.params.id, pagoItem.idMedioPago, numeric(pagoItem.monto), pagoItem.referencia || null);
     }
+
+    return { cambio: pagoAplicado.cambio };
   });
 
-  editarVenta();
+  const resultadoVenta = editarVenta();
   const ventaEditada = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id);
   const productos = db.prepare('SELECT * FROM productos_vendidos WHERE idVenta = ?').all(req.params.id);
-  res.json({ ...ventaEditada, productos, cambio: ventaEditada.pago - ventaEditada.monto });
+  res.json({ ...ventaEditada, productos, cambio: resultadoVenta.cambio });
 });
 
 app.post('/api/ventas/contado/:id/pagos', (req, res) => {
@@ -1155,6 +1173,14 @@ app.post('/api/ventas/contado/:id/pagos', (req, res) => {
     const pagos = normalizarPagos(req.body.pagos, 0);
     if (pagos.length === 0) {
       const error = new Error('Debe indicar pagos validos');
+      error.status = 400;
+      throw error;
+    }
+
+    const totalNuevoPago = pagos.reduce((sum, item) => sum + numeric(item.monto), 0);
+    const saldoActual = Math.max(numeric(venta.monto) - numeric(venta.pago), 0);
+    if (totalNuevoPago > saldoActual) {
+      const error = new Error('El pago no puede superar el saldo pendiente de la venta');
       error.status = 400;
       throw error;
     }
@@ -1188,7 +1214,6 @@ app.post('/api/ventas/contado/:id/pagos', (req, res) => {
   `).all(req.params.id);
   res.status(201).json({ ...ventaActualizada, pagos });
 });
-
 app.delete('/api/ventas/contado/:id', (req, res) => {
   const anularVenta = db.transaction(() => {
     const venta = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id);
@@ -1244,6 +1269,28 @@ function normalizarPagos(pagos, pagoAnterior) {
   return [{ idMedioPago: efectivo?.idMedioPago || 1, monto: montoAnterior, referencia: '' }];
 }
 
+function ajustarPagosAlMonto(pagos, montoVenta) {
+  const totalRecibido = pagos.reduce((sum, item) => sum + numeric(item.monto), 0);
+  let restante = Math.max(numeric(montoVenta), 0);
+  const pagosAplicados = [];
+
+  for (const pago of pagos) {
+    if (restante <= 0) break;
+    const montoAplicado = Math.min(numeric(pago.monto), restante);
+    if (montoAplicado > 0) {
+      pagosAplicados.push({ ...pago, monto: montoAplicado });
+      restante -= montoAplicado;
+    }
+  }
+
+  const pago = pagosAplicados.reduce((sum, item) => sum + numeric(item.monto), 0);
+  return {
+    pagos: pagosAplicados,
+    pago,
+    recibido: totalRecibido,
+    cambio: Math.max(totalRecibido - pago, 0)
+  };
+}
 function estadoPagoDesdeMontos(monto, pago) {
   if (pago <= 0) return 'PENDIENTE';
   if (pago < monto) return 'PARCIAL';

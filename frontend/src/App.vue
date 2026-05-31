@@ -11,7 +11,16 @@
         </div>
 
         <v-list nav density="comfortable">
-          <v-list-item v-for="item in items" :key="item.to" :to="item.to" :prepend-icon="item.icon" :title="item.title" />
+          <v-list-item
+            v-for="item in items"
+            :key="item.to"
+            :to="item.external ? undefined : item.to"
+            :href="item.external ? item.to : undefined"
+            :target="item.external ? '_blank' : undefined"
+            :rel="item.external ? 'noopener noreferrer' : undefined"
+            :prepend-icon="item.icon"
+            :title="item.title"
+          />
         </v-list>
       </v-navigation-drawer>
 
@@ -75,6 +84,7 @@ const items = [
   { title: 'Inicio', icon: 'mdi-view-dashboard', to: '/' },
   { title: 'Productos', icon: 'mdi-package-variant', to: '/productos' },
   { title: 'Ventas', icon: 'mdi-cart', to: '/ventas' },
+  { title: 'Pantalla pedidos', icon: 'mdi-monitor-dashboard', to: '/pantalla-pedidos', external: true },
   { title: 'Compras', icon: 'mdi-truck-delivery', to: '/compras' },
   { title: 'Clientes', icon: 'mdi-account-group', to: '/clientes' },
   { title: 'Proveedores', icon: 'mdi-factory', to: '/proveedores' },
