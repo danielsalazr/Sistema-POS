@@ -8,8 +8,15 @@ const app = express();
 const port = process.env.PORT || 3020;
 const printerName = process.env.POS_PRINTER || 'EPSON_TM_T20II';
 
+app.disable('etag');
 app.use(cors());
 app.use(express.json());
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
 
 app.get('/api/salud', (req, res) => {
   res.json({ ok: true });
@@ -529,8 +536,51 @@ app.get('/api/caja/resumen', (req, res) => {
       WHERE pa.idCompania = @idCompania AND pa.tipo IN ('APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
     )
   `).get({ idCompania }).total;
-  const totalCaja = ventasCobradas + abonos + ingresos + entradaPrestamosAportes - egresos - comprasPagadas - salidaPrestamosAportes;
-  const balanceSistema = ventasGeneradas + abonos + ingresos + entradaPrestamosAportes - egresos - comprasGeneradas - salidaPrestamosAportes;
+  const prestamosAportesNeto = entradaPrestamosAportes - salidaPrestamosAportes;
+  const aportesEntrada = db.prepare(`
+    SELECT COALESCE(SUM(monto), 0) total FROM (
+      SELECT monto FROM prestamos_aportes WHERE idCompania = @idCompania AND tipo = 'APORTE_AL_NEGOCIO'
+      UNION ALL
+      SELECT s.monto
+      FROM subsanaciones_prestamos_aportes s
+      INNER JOIN prestamos_aportes pa ON pa.idMovimiento = s.idMovimiento
+      WHERE pa.idCompania = @idCompania AND pa.tipo = 'RETIRO_DEL_NEGOCIO'
+    )
+  `).get({ idCompania }).total;
+  const aportesSalida = db.prepare(`
+    SELECT COALESCE(SUM(monto), 0) total FROM (
+      SELECT monto FROM prestamos_aportes WHERE idCompania = @idCompania AND tipo = 'RETIRO_DEL_NEGOCIO'
+      UNION ALL
+      SELECT s.monto
+      FROM subsanaciones_prestamos_aportes s
+      INNER JOIN prestamos_aportes pa ON pa.idMovimiento = s.idMovimiento
+      WHERE pa.idCompania = @idCompania AND pa.tipo = 'APORTE_AL_NEGOCIO'
+    )
+  `).get({ idCompania }).total;
+  const prestamosEntrada = db.prepare(`
+    SELECT COALESCE(SUM(monto), 0) total FROM (
+      SELECT monto FROM prestamos_aportes WHERE idCompania = @idCompania AND tipo IN ('PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
+      UNION ALL
+      SELECT s.monto
+      FROM subsanaciones_prestamos_aportes s
+      INNER JOIN prestamos_aportes pa ON pa.idMovimiento = s.idMovimiento
+      WHERE pa.idCompania = @idCompania AND pa.tipo IN ('PRESTAMO_DEL_NEGOCIO', 'DEVOLUCION_PAGADA')
+    )
+  `).get({ idCompania }).total;
+  const prestamosSalida = db.prepare(`
+    SELECT COALESCE(SUM(monto), 0) total FROM (
+      SELECT monto FROM prestamos_aportes WHERE idCompania = @idCompania AND tipo IN ('PRESTAMO_DEL_NEGOCIO', 'DEVOLUCION_PAGADA')
+      UNION ALL
+      SELECT s.monto
+      FROM subsanaciones_prestamos_aportes s
+      INNER JOIN prestamos_aportes pa ON pa.idMovimiento = s.idMovimiento
+      WHERE pa.idCompania = @idCompania AND pa.tipo IN ('PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA')
+    )
+  `).get({ idCompania }).total;
+  const aportesNeto = aportesEntrada - aportesSalida;
+  const prestamosNeto = prestamosEntrada - prestamosSalida;
+  const totalCaja = ventasCobradas + abonos + ingresos - egresos - comprasPagadas;
+  const balanceSistema = ventasGeneradas + abonos + ingresos - egresos - comprasGeneradas;
   const pendientePorMover = balanceSistema - totalCaja;
 
   res.json({
@@ -545,6 +595,13 @@ app.get('/api/caja/resumen', (req, res) => {
     comprasGeneradas,
     entradaPrestamosAportes,
     salidaPrestamosAportes,
+      prestamosAportesNeto,
+      aportesEntrada,
+      aportesSalida,
+      aportesNeto,
+      prestamosEntrada,
+      prestamosSalida,
+      prestamosNeto,
     total: totalCaja,
     totalCaja,
     balanceSistema,

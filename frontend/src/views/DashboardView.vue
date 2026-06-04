@@ -25,9 +25,10 @@
 import { computed, onMounted, ref } from 'vue';
 import { api } from '../api.js';
 
-const resumen = ref({ ventas: 0, ventasCobradas: 0, ventasGeneradas: 0, compras: 0, comprasPagadas: 0, comprasGeneradas: 0, abonos: 0, ingresos: 0, egresos: 0, total: 0, totalCaja: 0, balanceSistema: 0, pendientePorMover: 0 });
+const resumen = ref({ ventas: 0, ventasCobradas: 0, ventasGeneradas: 0, compras: 0, comprasPagadas: 0, comprasGeneradas: 0, abonos: 0, ingresos: 0, egresos: 0, entradaPrestamosAportes: 0, salidaPrestamosAportes: 0, prestamosAportesNeto: 0, aportesNeto: 0, prestamosNeto: 0, total: 0, totalCaja: 0, balanceSistema: 0, pendientePorMover: 0 });
 
-const prestamosAportesNeto = computed(() => (resumen.value.entradaPrestamosAportes || 0) - (resumen.value.salidaPrestamosAportes || 0));
+const aportesNeto = computed(() => resumen.value.aportesNeto || 0);
+const prestamosNeto = computed(() => resumen.value.prestamosNeto || 0);
 const pendientePorMover = computed(() => resumen.value.pendientePorMover || 0);
 
 const cards = computed(() => [
@@ -39,10 +40,16 @@ const cards = computed(() => [
   { label: 'Ingresos', value: resumen.value.ingresos, sign: '+ ', className: 'money-in' },
   { label: 'Egresos', value: resumen.value.egresos, sign: '- ', className: 'money-out' },
   {
-    label: 'Prestamos/aportes',
-    value: prestamosAportesNeto.value,
-    sign: prestamosAportesNeto.value >= 0 ? '+ ' : '- ',
-    className: prestamosAportesNeto.value >= 0 ? 'money-in' : 'money-out'
+    label: 'Aportes',
+    value: aportesNeto.value,
+    sign: aportesNeto.value >= 0 ? '+ ' : '- ',
+    className: aportesNeto.value >= 0 ? 'money-in' : 'money-out'
+  },
+  {
+    label: 'Prestamos',
+    value: prestamosNeto.value,
+    sign: prestamosNeto.value >= 0 ? '+ ' : '- ',
+    className: prestamosNeto.value >= 0 ? 'money-in' : 'money-out'
   },
   { label: 'Total caja', value: resumen.value.totalCaja ?? resumen.value.total, sign: '', className: 'money-total' },
   { label: 'Balance sistema', value: resumen.value.balanceSistema, sign: '', className: 'money-balance' },
