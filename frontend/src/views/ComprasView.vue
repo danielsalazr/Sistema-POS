@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <div class="page-title">Compras</div>
-        <div class="page-subtitle">Registra entradas de inventario por proveedor.</div>
+        <div class="page-subtitle">Registra compras e insumos por proveedor.</div>
       </div>
       <v-btn color="primary" prepend-icon="mdi-refresh" @click="loadHistorial">Actualizar historial</v-btn>
     </div>
@@ -14,7 +14,7 @@
           <v-card-title>{{ compraEditando ? `Editando compra ${compraEditando.idCompra}` : 'Nueva compra' }}</v-card-title>
           <v-card-text>
             <v-alert v-if="compraEditando" class="mb-4" type="info" variant="tonal" density="compact">
-              Al guardar se revierte el inventario anterior de la compra y se aplica el nuevo detalle.
+              Al guardar se reemplaza el detalle anterior de la compra.
             </v-alert>
             <v-row>
               <v-col cols="12" md="4">
@@ -34,35 +34,17 @@
                   @update:search="buscarProveedores"
                 />
               </v-col>
-              <v-col cols="12" md="7">
-                <v-autocomplete
-                  v-model="productoPendiente"
-                  v-model:search="busquedaProducto"
-                  :items="productos"
-                  :loading="cargandoProductos"
-                  item-title="descripcion"
-                  item-value="idProducto"
-                  label="Producto"
-                  prepend-inner-icon="mdi-magnify"
-                  return-object
-                  clearable
-                  @update:search="buscarProductos"
-                />
-              </v-col>
             </v-row>
 
             <v-row>
               <v-col cols="12" md="4">
-                <v-text-field v-model="descripcionPendiente" label="Descripcion libre" placeholder="Fresas, banano, Nutella..." />
+                <v-text-field v-model="descripcionPendiente" label="Descripcion" placeholder="Fresas, banano, Nutella..." />
               </v-col>
               <v-col cols="6" md="3">
                 <v-text-field v-model.number="cantidadPendiente" label="Cantidad" min="1" type="number" />
               </v-col>
               <v-col cols="6" md="3">
                 <v-text-field v-model.number="costoPendiente" label="Costo" min="0" type="number" />
-              </v-col>
-              <v-col cols="6" md="2">
-                <v-text-field v-model.number="precioVentaPendiente" label="Precio venta" min="0" type="number" />
               </v-col>
               <v-col cols="6" md="3">
                 <v-btn block class="mt-1" color="primary" prepend-icon="mdi-plus" :disabled="!puedeAgregarItem" @click="agregarProductoPendiente">
@@ -74,7 +56,7 @@
             <v-table density="comfortable">
               <thead>
                 <tr>
-                  <th>Producto</th>
+                  <th>Descripcion</th>
                   <th class="text-right">Costo</th>
                   <th class="text-right">Cantidad</th>
                   <th class="text-right">Subtotal</th>
@@ -83,12 +65,11 @@
               </thead>
               <tbody>
                 <tr v-if="carrito.length === 0">
-                  <td colspan="5" class="empty-row">Agrega productos para registrar la compra.</td>
+                  <td colspan="5" class="empty-row">Agrega lineas para registrar la compra.</td>
                 </tr>
                 <tr v-for="(item, index) in carrito" :key="item.lineaId">
                   <td>
                     <div>{{ item.descripcion }}</div>
-                    <div class="text-caption text-medium-emphasis">{{ item.idProducto ? 'Inventario' : 'Insumo libre' }}</div>
                   </td>
                   <td class="text-right">{{ currency(item.precioCompra) }}</td>
                   <td class="text-right qty-cell">
@@ -164,7 +145,7 @@
           <v-table density="comfortable">
             <thead>
               <tr>
-                <th>Producto</th>
+                <th>Descripcion</th>
                 <th class="text-right">Cantidad</th>
                 <th class="text-right">Costo</th>
                 <th class="text-right">Subtotal</th>
@@ -193,21 +174,16 @@ import { api } from '../api.js';
 import { formatLocalDateTime, inputToSql, sqlToDateInput, todayDateInput } from '../dates.js';
 import { session } from '../session.js';
 
-const productos = ref([]);
 const proveedores = ref([]);
 const compras = ref([]);
 const carrito = ref([]);
-const productoPendiente = ref(null);
 const proveedorSeleccionado = ref(null);
-const busquedaProducto = ref('');
 const busquedaProveedor = ref('');
 const descripcionPendiente = ref('');
 const fechaMovimiento = ref(todayDateInput());
 const cantidadPendiente = ref(1);
 const costoPendiente = ref(0);
-const precioVentaPendiente = ref(0);
 const pago = ref(0);
-const cargandoProductos = ref(false);
 const cargandoProveedores = ref(false);
 const cargandoCompras = ref(false);
 const guardando = ref(false);
@@ -229,7 +205,7 @@ const headers = [
 const total = computed(() => carrito.value.reduce((sum, item) => sum + Number(item.precioCompra || 0) * Number(item.cantidadComprada || 0), 0));
 const saldoCompra = computed(() => Math.max(total.value - Number(pago.value || 0), 0));
 const puedeGuardar = computed(() => carrito.value.length > 0 && proveedorSeleccionado.value && Number(pago.value || 0) >= 0);
-const puedeAgregarItem = computed(() => productoPendiente.value || descripcionPendiente.value.trim());
+const puedeAgregarItem = computed(() => descripcionPendiente.value.trim() && Number(cantidadPendiente.value || 0) > 0 && Number(costoPendiente.value || 0) >= 0);
 
 function currency(value) {
   return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(value || 0);
@@ -243,14 +219,6 @@ function notify(text, color = 'success') {
   snackbar.value = { visible: true, text, color };
 }
 
-async function buscarProductos() {
-  cargandoProductos.value = true;
-  try {
-    productos.value = await api.get(`/productos?q=${encodeURIComponent(busquedaProducto.value || '')}`);
-  } finally {
-    cargandoProductos.value = false;
-  }
-}
 
 async function buscarProveedores() {
   cargandoProveedores.value = true;
@@ -280,35 +248,22 @@ async function refrescarCompras() {
 
 async function agregarProductoPendiente() {
   if (!puedeAgregarItem.value) return;
-  const descripcion = descripcionPendiente.value.trim() || productoPendiente.value.descripcion;
-  const idProducto = productoPendiente.value?.idProducto || null;
-  const existente = idProducto ? carrito.value.find((item) => item.idProducto === idProducto) : null;
   const cantidad = Math.max(Number(cantidadPendiente.value || 1), 1);
-  if (existente) {
-    existente.cantidadComprada += cantidad;
-    existente.precioCompra = Number(costoPendiente.value || existente.precioCompra);
-    existente.precioVenta = Number(precioVentaPendiente.value || existente.precioVenta);
-  } else {
-    carrito.value.push({
-      lineaId: nextLineaId++,
-      idProducto,
-      codigoBarras: productoPendiente.value?.codigoBarras || '',
-      descripcion,
-      cantidadComprada: cantidad,
-      precioCompra: Number(costoPendiente.value || productoPendiente.value?.precioCompra || 0),
-      precioVenta: Number(precioVentaPendiente.value || productoPendiente.value?.precioVenta || 0)
-    });
-  }
-  productoPendiente.value = null;
+  carrito.value.push({
+    lineaId: nextLineaId++,
+    idProducto: null,
+    codigoBarras: '',
+    descripcion: descripcionPendiente.value.trim(),
+    cantidadComprada: cantidad,
+    precioCompra: Number(costoPendiente.value || 0),
+    precioVenta: 0
+  });
   descripcionPendiente.value = '';
   cantidadPendiente.value = 1;
   costoPendiente.value = 0;
-  precioVentaPendiente.value = 0;
-  busquedaProducto.value = '';
   await nextTick();
   pago.value = total.value;
 }
-
 function quitarProducto(index) {
   carrito.value.splice(index, 1);
   nextTick(() => {
@@ -319,14 +274,11 @@ function quitarProducto(index) {
 function limpiar() {
   carrito.value = [];
   pago.value = 0;
-  productoPendiente.value = null;
   proveedorSeleccionado.value = null;
-  busquedaProducto.value = '';
   busquedaProveedor.value = '';
   descripcionPendiente.value = '';
   cantidadPendiente.value = 1;
   costoPendiente.value = 0;
-  precioVentaPendiente.value = 0;
   fechaMovimiento.value = todayDateInput();
 }
 
@@ -344,12 +296,12 @@ async function registrarCompra() {
       fechaMovimiento: inputToSql(fechaMovimiento.value),
       pago: Number(pago.value),
       productos: carrito.value.map((item) => ({
-        idProducto: item.idProducto,
+        idProducto: null,
         descripcion: item.descripcion,
-        codigoBarras: item.codigoBarras,
+        codigoBarras: null,
         cantidadComprada: Number(item.cantidadComprada),
         precioCompra: Number(item.precioCompra),
-        precioVenta: Number(item.precioVenta)
+        precioVenta: 0
       }))
     };
     const compra = compraEditando.value
@@ -358,7 +310,7 @@ async function registrarCompra() {
     notify(`Compra ${compra.idCompra} ${compraEditando.value ? 'actualizada' : 'registrada'}`);
     compraEditando.value = null;
     limpiar();
-    await Promise.all([buscarProductos(), refrescarCompras()]);
+    await refrescarCompras();
   } catch (err) {
     notify(err.message, 'error');
   } finally {
@@ -385,12 +337,12 @@ async function editarCompra(compra) {
     };
     carrito.value = compraCompleta.productos.map((producto) => ({
       lineaId: nextLineaId++,
-      idProducto: producto.idProducto,
-      codigoBarras: producto.codigoBarras || '',
+      idProducto: null,
+      codigoBarras: '',
       descripcion: producto.descripcion,
       cantidadComprada: producto.cantidadComprada,
       precioCompra: producto.precioCompra,
-      precioVenta: producto.precioVenta
+      precioVenta: 0
     }));
     pago.value = compraCompleta.pago;
     fechaMovimiento.value = sqlToDateInput(compraCompleta.fecha);
@@ -405,14 +357,14 @@ async function anularCompra(compra) {
   try {
     await api.delete(`/compras/${compra.idCompra}`);
     notify(`Compra ${compra.idCompra} anulada`);
-    await Promise.all([buscarProductos(), refrescarCompras()]);
+    await refrescarCompras();
   } catch (err) {
     notify(err.message, 'error');
   }
 }
 
 onMounted(async () => {
-  await Promise.all([buscarProductos(), buscarProveedores(), loadHistorial()]);
+  await Promise.all([buscarProveedores(), loadHistorial()]);
 });
 </script>
 

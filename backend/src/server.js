@@ -313,19 +313,80 @@ app.post('/api/prestamos-aportes', (req, res) => {
   const monto = numeric(req.body.monto, 0);
   if (monto <= 0) return res.status(400).json({ error: 'El monto debe ser mayor que cero' });
 
-  const result = db.prepare(`
-    INSERT INTO prestamos_aportes (idCompania, idPersonaFinanciera, tipo, monto, fecha, descripcion, idUsuario)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(companiaId(req), req.body.idPersonaFinanciera, req.body.tipo, monto, nowSql(), req.body.descripcion || '', req.body.idUsuario);
-  res.status(201).json(db.prepare(`
+  const convertirCompra = req.body.compraDesdeMovimiento?.activa === true;
+  if (convertirCompra && !['APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA'].includes(req.body.tipo)) {
+    return res.status(400).json({ error: 'Solo los movimientos de entrada pueden convertirse en compra' });
+  }
+  let productosCompraDesdeMovimiento = [];
+  let montoCompraDesdeMovimiento = 0;
+  if (convertirCompra) {
+    if (!req.body.compraDesdeMovimiento.idProveedor) return res.status(400).json({ error: 'Debe seleccionar proveedor para crear la compra' });
+    const proveedor = db.prepare('SELECT * FROM proveedores WHERE idCompania = ? AND idProveedor = ?').get(companiaId(req), req.body.compraDesdeMovimiento.idProveedor);
+    if (!proveedor) return res.status(400).json({ error: 'Proveedor no disponible para la compra' });
+    if (!Array.isArray(req.body.compraDesdeMovimiento.productos) || req.body.compraDesdeMovimiento.productos.length === 0) {
+      return res.status(400).json({ error: 'Debe agregar al menos un articulo para crear la compra' });
+    }
+
+    productosCompraDesdeMovimiento = req.body.compraDesdeMovimiento.productos.map((item) => {
+      const cantidad = numeric(item.cantidadComprada || item.cantidad, 0);
+      const precioCompra = numeric(item.precioCompra, 0);
+      const descripcion = String(item.descripcion || '').trim();
+      if (!descripcion) {
+        const error = new Error('Cada articulo de la compra debe tener descripcion');
+        error.status = 400;
+        throw error;
+      }
+      if (cantidad <= 0 || precioCompra < 0) {
+        const error = new Error('La cantidad debe ser mayor que cero y el costo no puede ser negativo');
+        error.status = 400;
+        throw error;
+      }
+      montoCompraDesdeMovimiento += cantidad * precioCompra;
+      return { descripcion, cantidadComprada: cantidad, precioCompra };
+    });
+
+    if (Math.abs(montoCompraDesdeMovimiento - monto) > 0.01) {
+      return res.status(400).json({ error: 'El total de articulos de la compra debe coincidir con el monto del movimiento' });
+    }
+  }
+
+  const crearMovimiento = db.transaction(() => {
+    const fecha = nowSql();
+    const result = db.prepare(`
+      INSERT INTO prestamos_aportes (idCompania, idPersonaFinanciera, tipo, monto, fecha, descripcion, idUsuario)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(companiaId(req), req.body.idPersonaFinanciera, req.body.tipo, monto, fecha, req.body.descripcion || '', req.body.idUsuario);
+
+    let idCompra = null;
+    if (convertirCompra) {
+      const compra = db.prepare(`
+        INSERT INTO compras (idCompania, monto, pago, fecha, fechaRegistro, idProveedor, idUsuario)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(companiaId(req), montoCompraDesdeMovimiento, montoCompraDesdeMovimiento, fecha, fecha, req.body.compraDesdeMovimiento.idProveedor, req.body.idUsuario);
+      idCompra = compra.lastInsertRowid;
+      const insertarProductoCompra = db.prepare(`
+        INSERT INTO productos_comprados (
+          idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const producto of productosCompraDesdeMovimiento) {
+        insertarProductoCompra.run(null, idCompra, null, producto.descripcion, producto.precioCompra, 0, producto.cantidadComprada);
+      }
+    }
+
+    return { idMovimiento: result.lastInsertRowid, idCompra };
+  });
+
+  const creado = crearMovimiento();
+  const movimiento = db.prepare(`
     SELECT pa.*, pf.nombre AS persona, pf.relacion, u.nombre AS usuario
     FROM prestamos_aportes pa
     INNER JOIN personas_financieras pf ON pf.idPersonaFinanciera = pa.idPersonaFinanciera
     INNER JOIN usuarios u ON u.idUsuario = pa.idUsuario
     WHERE pa.idMovimiento = ?
-  `).get(result.lastInsertRowid));
+  `).get(creado.idMovimiento);
+  res.status(201).json({ ...movimiento, idCompra: creado.idCompra });
 });
-
 app.put('/api/prestamos-aportes/:id', (req, res) => {
   requireFields(req.body, ['idPersonaFinanciera', 'tipo', 'monto', 'idUsuario']);
   const tipos = [
@@ -579,8 +640,8 @@ app.get('/api/caja/resumen', (req, res) => {
   `).get({ idCompania }).total;
   const aportesNeto = aportesEntrada - aportesSalida;
   const prestamosNeto = prestamosEntrada - prestamosSalida;
-  const totalCaja = ventasCobradas + abonos + ingresos - egresos - comprasPagadas;
-  const balanceSistema = ventasGeneradas + abonos + ingresos - egresos - comprasGeneradas;
+  const totalCaja = ventasCobradas + abonos + ingresos + entradaPrestamosAportes - egresos - comprasPagadas - salidaPrestamosAportes;
+  const balanceSistema = ventasGeneradas + abonos + ingresos + entradaPrestamosAportes - egresos - comprasGeneradas - salidaPrestamosAportes;
   const pendientePorMover = balanceSistema - totalCaja;
 
   res.json({
@@ -613,7 +674,7 @@ app.get('/api/compras', (req, res) => {
   const compras = db.prepare(`
     SELECT c.idCompra, c.monto, c.pago, c.fecha, c.idProveedor, c.idUsuario,
            p.nombre AS proveedor, u.nombre AS usuario,
-           COUNT(pc.idProducto) AS cantidadProductos
+           COUNT(pc.idCompra) AS cantidadProductos
     FROM compras c
     INNER JOIN proveedores p ON p.idProveedor = c.idProveedor
     INNER JOIN usuarios u ON u.idUsuario = c.idUsuario

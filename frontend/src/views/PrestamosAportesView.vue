@@ -139,11 +139,79 @@
             <v-text-field v-model.number="movimientoForm.monto" label="Monto" type="number" />
             <v-text-field v-model="movimientoForm.descripcion" label="Descripcion" />
           </div>
+
+          <v-expand-transition>
+            <div v-if="puedeConvertirMovimientoEnCompra" class="purchase-conversion">
+              <v-checkbox
+                v-model="compraDesdeMovimiento.activa"
+                label="Registrar este movimiento tambien como compra pagada"
+                color="primary"
+                density="compact"
+                hide-details
+              />
+              <div v-if="compraDesdeMovimiento.activa" class="mt-2">
+                <v-autocomplete
+                  v-model="compraDesdeMovimiento.idProveedor"
+                  :items="proveedores"
+                  item-title="nombre"
+                  item-value="idProveedor"
+                  label="Proveedor de la compra"
+                />
+
+                <v-row dense class="mt-1">
+                  <v-col cols="12" md="5">
+                    <v-text-field v-model="articuloCompraForm.descripcion" label="Articulo" density="compact" />
+                  </v-col>
+                  <v-col cols="6" md="2">
+                    <v-text-field v-model.number="articuloCompraForm.cantidad" label="Cantidad" type="number" min="1" density="compact" />
+                  </v-col>
+                  <v-col cols="6" md="3">
+                    <v-text-field v-model.number="articuloCompraForm.costo" label="Costo" type="number" min="0" density="compact" />
+                  </v-col>
+                  <v-col cols="12" md="2">
+                    <v-btn block color="primary" variant="tonal" prepend-icon="mdi-plus" :disabled="!puedeAgregarArticuloCompra" @click="agregarArticuloCompra">
+                      Agregar
+                    </v-btn>
+                  </v-col>
+                </v-row>
+
+                <v-table density="compact" class="mt-2">
+                  <thead>
+                    <tr>
+                      <th>Articulo</th>
+                      <th class="text-right">Cantidad</th>
+                      <th class="text-right">Costo</th>
+                      <th class="text-right">Subtotal</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="compraDesdeMovimiento.productos.length === 0">
+                      <td colspan="5" class="empty-row">Agrega articulos para crear la compra.</td>
+                    </tr>
+                    <tr v-for="(producto, index) in compraDesdeMovimiento.productos" :key="producto.lineaId">
+                      <td>{{ producto.descripcion }}</td>
+                      <td class="text-right">{{ producto.cantidadComprada }}</td>
+                      <td class="text-right">{{ currency(producto.precioCompra) }}</td>
+                      <td class="text-right">{{ currency(producto.cantidadComprada * producto.precioCompra) }}</td>
+                      <td class="text-right">
+                        <v-btn icon="mdi-delete" size="small" color="error" variant="text" @click="quitarArticuloCompra(index)" />
+                      </td>
+                    </tr>
+                  </tbody>
+                </v-table>
+                <div class="conversion-total">
+                  <span>Total compra</span>
+                  <strong>{{ currency(totalCompraDesdeMovimiento) }}</strong>
+                </div>
+              </div>
+            </div>
+          </v-expand-transition>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="movimientoDialog = false">Cancelar</v-btn>
-          <v-btn color="primary" :loading="savingMovimiento" @click="guardarMovimiento">Guardar</v-btn>
+          <v-btn color="primary" :loading="savingMovimiento" :disabled="!puedeGuardarMovimiento" @click="guardarMovimiento">Guardar</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -285,6 +353,7 @@ import { session } from '../session.js';
 const personas = ref([]);
 const movimientos = ref([]);
 const mediosPago = ref([]);
+const proveedores = ref([]);
 const detalle = ref(null);
 const movimientoSeleccionado = ref(null);
 const personaSeleccionada = ref(null);
@@ -316,6 +385,9 @@ const tipos = [
 const personaForm = reactive(emptyPersona());
 const movimientoForm = reactive(emptyMovimiento());
 const subsanacionForm = reactive(emptySubsanacion());
+const compraDesdeMovimiento = reactive(emptyCompraDesdeMovimiento());
+const articuloCompraForm = reactive(emptyArticuloCompra());
+let nextArticuloCompraId = 1;
 
 const personasHeaders = [
   { title: 'Nombre', key: 'nombre' },
@@ -340,6 +412,16 @@ const movimientosHeaders = [
 const totalNegocioDebe = computed(() => personas.value.reduce((sum, persona) => sum + Number(persona.negocioDebe || 0), 0));
 const totalPersonaDebe = computed(() => personas.value.reduce((sum, persona) => sum + Number(persona.personaDebe || 0), 0));
 const puedeGuardarSubsanacion = computed(() => Number(subsanacionForm.monto || 0) > 0 && Number(subsanacionForm.monto || 0) <= Number(movimientoSeleccionado.value?.saldo || 0));
+const puedeConvertirMovimientoEnCompra = computed(() => !movimientoForm.idMovimiento && esEntrada(movimientoForm.tipo));
+const totalCompraDesdeMovimiento = computed(() => compraDesdeMovimiento.productos.reduce((sum, item) => sum + Number(item.cantidadComprada || 0) * Number(item.precioCompra || 0), 0));
+const puedeAgregarArticuloCompra = computed(() => articuloCompraForm.descripcion.trim() && Number(articuloCompraForm.cantidad || 0) > 0 && Number(articuloCompraForm.costo || 0) >= 0);
+const puedeGuardarMovimiento = computed(() => (
+  movimientoForm.idPersonaFinanciera &&
+  Number(movimientoForm.monto || 0) > 0 &&
+  (!compraDesdeMovimiento.activa || !puedeConvertirMovimientoEnCompra.value || (
+    compraDesdeMovimiento.idProveedor && compraDesdeMovimiento.productos.length > 0 && Number(movimientoForm.monto || 0) === totalCompraDesdeMovimiento.value
+  ))
+));
 const movimientosPersonaHeaders = movimientosHeaders.filter((header) => header.key !== 'persona');
 const movimientosPersona = computed(() => {
   if (!personaSeleccionada.value?.idPersonaFinanciera) return [];
@@ -356,6 +438,14 @@ function emptyMovimiento() {
 
 function emptySubsanacion() {
   return { monto: 0, idMedioPago: null, referencia: '', descripcion: '' };
+}
+
+function emptyCompraDesdeMovimiento() {
+  return { activa: false, idProveedor: null, productos: [] };
+}
+
+function emptyArticuloCompra() {
+  return { descripcion: '', cantidad: 1, costo: 0 };
 }
 
 function currency(value) {
@@ -420,6 +510,10 @@ async function loadMediosPago() {
   mediosPago.value = await api.get('/medios-pago');
 }
 
+async function loadProveedores() {
+  proveedores.value = await api.get('/proveedores');
+}
+
 async function refrescarPrestamosAportes() {
   await Promise.all([loadPersonas(), loadMovimientos()]);
 
@@ -455,10 +549,14 @@ function editarPersona(item) {
 
 function nuevoMovimiento() {
   Object.assign(movimientoForm, emptyMovimiento());
+  Object.assign(compraDesdeMovimiento, emptyCompraDesdeMovimiento());
+  Object.assign(articuloCompraForm, emptyArticuloCompra());
   movimientoDialog.value = true;
 }
 
 function editarMovimiento(item) {
+  Object.assign(compraDesdeMovimiento, emptyCompraDesdeMovimiento());
+  Object.assign(articuloCompraForm, emptyArticuloCompra());
   Object.assign(movimientoForm, {
     idMovimiento: item.idMovimiento,
     idPersonaFinanciera: item.idPersonaFinanciera,
@@ -483,6 +581,28 @@ async function guardarPersona() {
   }
 }
 
+function sincronizarMontoCompraDesdeMovimiento() {
+  if (compraDesdeMovimiento.activa && puedeConvertirMovimientoEnCompra.value) {
+    movimientoForm.monto = totalCompraDesdeMovimiento.value;
+  }
+}
+
+function agregarArticuloCompra() {
+  if (!puedeAgregarArticuloCompra.value) return;
+  compraDesdeMovimiento.productos.push({
+    lineaId: nextArticuloCompraId++,
+    descripcion: articuloCompraForm.descripcion.trim(),
+    cantidadComprada: Math.max(Number(articuloCompraForm.cantidad || 1), 1),
+    precioCompra: Number(articuloCompraForm.costo || 0)
+  });
+  Object.assign(articuloCompraForm, emptyArticuloCompra());
+  sincronizarMontoCompraDesdeMovimiento();
+}
+
+function quitarArticuloCompra(index) {
+  compraDesdeMovimiento.productos.splice(index, 1);
+  sincronizarMontoCompraDesdeMovimiento();
+}
 async function guardarMovimiento() {
   savingMovimiento.value = true;
   try {
@@ -491,6 +611,17 @@ async function guardarMovimiento() {
       monto: Number(movimientoForm.monto),
       idUsuario: session.usuario.idUsuario
     };
+    if (compraDesdeMovimiento.activa && puedeConvertirMovimientoEnCompra.value) {
+      payload.compraDesdeMovimiento = {
+        activa: true,
+        idProveedor: compraDesdeMovimiento.idProveedor,
+        productos: compraDesdeMovimiento.productos.map((item) => ({
+          descripcion: item.descripcion,
+          cantidadComprada: Number(item.cantidadComprada),
+          precioCompra: Number(item.precioCompra)
+        }))
+      };
+    }
     if (movimientoForm.idMovimiento) await api.put(`/prestamos-aportes/${movimientoForm.idMovimiento}`, payload);
     else await api.post('/prestamos-aportes', payload);
     movimientoDialog.value = false;
@@ -537,7 +668,7 @@ async function verDetalleMovimiento(item) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadPersonas(), loadMovimientos(), loadMediosPago()]);
+  await Promise.all([loadPersonas(), loadMovimientos(), loadMediosPago(), loadProveedores()]);
 });
 </script>
 
@@ -577,6 +708,26 @@ onMounted(async () => {
 .debt-cleared {
   color: #2e7d32;
   font-weight: 760;
+}
+
+.purchase-conversion {
+  margin-top: 14px;
+}
+
+.conversion-total {
+  align-items: end;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.conversion-total span {
+  color: #667085;
+}
+
+.conversion-total strong {
+  font-size: 1.1rem;
 }
 
 .empty-row {
