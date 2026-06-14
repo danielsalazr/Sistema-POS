@@ -48,6 +48,25 @@
         </div>
       </v-card-text>
     </v-card>
+
+    <v-card class="data-card mt-4" variant="flat" border>
+      <v-card-title>Seguridad</v-card-title>
+      <v-card-text>
+        <v-alert class="mb-4" :type="seguridad.contrasenaEliminacionConfigurada ? 'success' : 'warning'" variant="tonal" density="compact">
+          {{ seguridad.contrasenaEliminacionConfigurada ? 'La eliminacion de prestamos y aportes tiene contrasena configurada.' : 'Configura una contrasena para poder eliminar prestamos y aportes.' }}
+        </v-alert>
+        <div class="form-grid">
+          <v-text-field
+            v-model="seguridad.contrasenaEliminacion"
+            label="Contrasena para eliminar prestamos y aportes"
+            type="password"
+            autocomplete="new-password"
+            :hint="seguridad.contrasenaEliminacionConfigurada ? 'Dejalo vacio para conservar la contrasena actual.' : 'Esta contrasena sera solicitada al eliminar movimientos.'"
+            persistent-hint
+          />
+        </div>
+      </v-card-text>
+    </v-card>
   </section>
 </template>
 
@@ -58,25 +77,30 @@ import { api } from '../api.js';
 const saving = ref(false);
 const empresa = reactive({ nombre: '', direccion: '', telefono: '', mensajePersonal: '' });
 const impresion = reactive({ width: 35, imprimirTicketCliente: true, imprimirComandaCocina: false });
+const seguridad = reactive({ contrasenaEliminacion: '', contrasenaEliminacionConfigurada: false });
 
 async function load() {
-  const [empresaData, impresionData] = await Promise.all([
+  const [empresaData, impresionData, seguridadData] = await Promise.all([
     api.get('/ajustes/empresa'),
-    api.get('/ajustes/impresion')
+    api.get('/ajustes/impresion'),
+    api.get('/ajustes/seguridad')
   ]);
   Object.assign(empresa, empresaData);
   Object.assign(impresion, impresionData);
+  Object.assign(seguridad, seguridadData, { contrasenaEliminacion: '' });
 }
 
 async function guardar() {
   saving.value = true;
   try {
-    const [empresaData, impresionData] = await Promise.all([
+    const [empresaData, impresionData, seguridadData] = await Promise.all([
       api.put('/ajustes/empresa', empresa),
-      api.put('/ajustes/impresion', impresion)
+      api.put('/ajustes/impresion', impresion),
+      api.put('/ajustes/seguridad', seguridad)
     ]);
     Object.assign(empresa, empresaData);
     Object.assign(impresion, impresionData);
+    Object.assign(seguridad, seguridadData, { contrasenaEliminacion: '' });
   } finally {
     saving.value = false;
   }

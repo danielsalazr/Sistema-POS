@@ -1,5 +1,6 @@
 import cors from 'cors';
 import { spawn } from 'node:child_process';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { db } from './db.js';
 import { normalizeDateTimeInput, nowSql, numeric, requireFields } from './utils.js';
@@ -7,6 +8,7 @@ import { normalizeDateTimeInput, nowSql, numeric, requireFields } from './utils.
 const app = express();
 const port = process.env.PORT || 3020;
 const printerName = process.env.POS_PRINTER || 'EPSON_TM_T20II';
+const DELETE_PASSWORD_SETTING = 'PRESTAMOS_APORTES_DELETE_PASSWORD_HASH';
 
 app.disable('etag');
 app.use(cors());
@@ -463,6 +465,28 @@ app.post('/api/prestamos-aportes/:id/subsanaciones', (req, res) => {
   `).get(result.lastInsertRowid));
 });
 
+
+app.post('/api/prestamos-aportes/:id/eliminar', (req, res) => {
+  const idCompania = companiaId(req);
+  const confirmacion = String(req.body.confirmacion || '').trim().toUpperCase();
+  const contrasena = String(req.body.contrasena || '');
+  if (confirmacion !== 'ELIMINAR') return res.status(400).json({ error: 'Debes confirmar escribiendo ELIMINAR' });
+
+  const storedPassword = getCompanySetting(idCompania, DELETE_PASSWORD_SETTING, '');
+  if (!storedPassword) return res.status(400).json({ error: 'Configura primero la contraseña de eliminación en Empresa' });
+  if (!verifyPassword(contrasena, storedPassword)) return res.status(401).json({ error: 'Contraseña de eliminación incorrecta' });
+
+  const movimiento = db.prepare('SELECT idMovimiento FROM prestamos_aportes WHERE idMovimiento = ? AND idCompania = ?').get(req.params.id, idCompania);
+  if (!movimiento) return res.status(404).json({ error: 'Movimiento no encontrado' });
+
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM subsanaciones_prestamos_aportes WHERE idMovimiento = ?').run(req.params.id);
+    db.prepare('DELETE FROM prestamos_aportes WHERE idMovimiento = ? AND idCompania = ?').run(req.params.id, idCompania);
+  });
+  tx();
+
+  res.json({ ok: true });
+});
 app.get('/api/usuarios', (req, res) => {
   res.json(db.prepare('SELECT idUsuario, nombre FROM usuarios ORDER BY nombre').all());
 });
@@ -568,6 +592,21 @@ app.put('/api/ajustes/impresion', (req, res) => {
   res.json(settings);
 });
 
+
+app.get('/api/ajustes/seguridad', (req, res) => {
+  const storedPassword = getCompanySetting(companiaId(req), DELETE_PASSWORD_SETTING, '');
+  res.json({ contrasenaEliminacionConfigurada: Boolean(storedPassword) });
+});
+
+app.put('/api/ajustes/seguridad', (req, res) => {
+  const idCompania = companiaId(req);
+  const password = String(req.body.contrasenaEliminacion || '').trim();
+  if (password) setCompanySetting(idCompania, DELETE_PASSWORD_SETTING, hashPassword(password));
+  if (req.body.limpiarContrasena === true) setCompanySetting(idCompania, DELETE_PASSWORD_SETTING, '');
+
+  const storedPassword = getCompanySetting(idCompania, DELETE_PASSWORD_SETTING, '');
+  res.json({ contrasenaEliminacionConfigurada: Boolean(storedPassword), contrasenaEliminacion: '' });
+});
 app.get('/api/caja/resumen', (req, res) => {
   const idCompania = companiaId(req);
   const ventasGeneradas = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ventas_contado WHERE idCompania = ?').get(idCompania).total;
@@ -1004,6 +1043,23 @@ app.get('/api/ventas/contado', (req, res) => {
     where.push('v.idUsuario = ?');
     params.push(req.query.idUsuario);
   }
+
+  const productosFiltro = []
+    .concat(req.query.idProducto || req.query.idProductos || [])
+    .flatMap((item) => String(item).split(','))
+    .map((item) => numeric(item, 0))
+    .filter((item) => item > 0);
+
+  if (productosFiltro.length > 0) {
+    where.push(`EXISTS (
+      SELECT 1
+      FROM productos_vendidos pvf
+      WHERE pvf.idVenta = v.idVenta
+        AND pvf.idProducto IN (${productosFiltro.map(() => '?').join(',')})
+    )`);
+    params.push(...productosFiltro);
+  }
+
   where.push('v.idCompania = ?');
   params.push(companiaId(req));
 
@@ -1032,7 +1088,83 @@ app.get('/api/ventas/contado', (req, res) => {
     return acc;
   }, { total: 0, pago: 0, cantidad: 0 });
 
-  if (req.query.resumen === '1') return res.json({ ventas, resumen });
+  let resumenItems = { totalVendido: 0, totalPagado: 0, cantidad: 0, items: [] };
+  if (productosFiltro.length > 0) {
+    const itemWhere = [];
+    const itemParams = [];
+
+    if (req.query.desde) {
+      itemWhere.push('date(v.fecha) >= date(?)');
+      itemParams.push(req.query.desde);
+    }
+    if (req.query.hasta) {
+      itemWhere.push('date(v.fecha) <= date(?)');
+      itemParams.push(req.query.hasta);
+    }
+    if (req.query.idUsuario) {
+      itemWhere.push('v.idUsuario = ?');
+      itemParams.push(req.query.idUsuario);
+    }
+    itemWhere.push(`pv.idProducto IN (${productosFiltro.map(() => '?').join(',')})`);
+    itemParams.push(...productosFiltro);
+    itemWhere.push('v.idCompania = ?');
+    itemParams.push(companiaId(req));
+
+    const itemWhereSql = `WHERE ${itemWhere.join(' AND ')}`;
+    const items = db.prepare(`
+      SELECT pv.idProducto,
+             pv.descripcion,
+             SUM(pv.cantidadVendida) AS cantidad,
+             SUM(pv.precioVenta * pv.cantidadVendida) AS totalVendido,
+             SUM(CASE WHEN v.pago >= v.monto THEN pv.precioVenta * pv.cantidadVendida ELSE 0 END) AS totalPagado
+      FROM productos_vendidos pv
+      INNER JOIN ventas_contado v ON v.idVenta = pv.idVenta
+      ${itemWhereSql}
+      GROUP BY pv.idProducto, pv.descripcion
+      ORDER BY pv.descripcion
+    `).all(...itemParams);
+
+    const ventasPorItem = db.prepare(`
+      SELECT pv.idProducto,
+             pv.descripcion,
+             pv.cantidadVendida AS cantidad,
+             pv.precioVenta,
+             pv.precioVenta * pv.cantidadVendida AS totalVendido,
+             CASE WHEN v.pago >= v.monto THEN pv.precioVenta * pv.cantidadVendida ELSE 0 END AS totalPagado,
+             v.idVenta,
+             v.fecha,
+             v.monto,
+             v.pago,
+             v.estadoPago,
+             v.estadoPreparacion,
+             c.nombreCompleto AS cliente,
+             u.nombre AS usuario
+      FROM productos_vendidos pv
+      INNER JOIN ventas_contado v ON v.idVenta = pv.idVenta
+      INNER JOIN clientes c ON c.idCliente = v.idCliente
+      INNER JOIN usuarios u ON u.idUsuario = v.idUsuario
+      ${itemWhereSql}
+      ORDER BY pv.descripcion, v.fecha DESC, v.idVenta DESC
+    `).all(...itemParams);
+
+    const ventasByItem = ventasPorItem.reduce((acc, venta) => {
+      const key = `${venta.idProducto}|${venta.descripcion}`;
+      if (!acc.has(key)) acc.set(key, []);
+      acc.get(key).push(venta);
+      return acc;
+    }, new Map());
+
+    resumenItems = items.reduce((acc, item) => {
+      const key = `${item.idProducto}|${item.descripcion}`;
+      acc.totalVendido += Number(item.totalVendido || 0);
+      acc.totalPagado += Number(item.totalPagado || 0);
+      acc.cantidad += Number(item.cantidad || 0);
+      acc.items.push({ ...item, ventas: ventasByItem.get(key) || [] });
+      return acc;
+    }, { totalVendido: 0, totalPagado: 0, cantidad: 0, items: [] });
+  }
+
+  if (req.query.resumen === '1') return res.json({ ventas, resumen, resumenItems });
   res.json(ventas);
 });
 
@@ -1449,6 +1581,21 @@ function setCompanySetting(idCompania, clave, valor) {
   `).run(`${clave}_${idCompania}`, String(valor), idCompania);
 }
 
+
+function hashPassword(password) {
+  const salt = randomBytes(16).toString('hex');
+  const hash = scryptSync(password, salt, 32).toString('hex');
+  return `scrypt:${salt}:${hash}`;
+}
+
+function verifyPassword(password, storedPassword) {
+  if (!storedPassword || !password) return false;
+  const [algorithm, salt, storedHash] = String(storedPassword).split(':');
+  if (algorithm !== 'scrypt' || !salt || !storedHash) return password === storedPassword;
+  const expected = Buffer.from(storedHash, 'hex');
+  const actual = scryptSync(password, salt, expected.length);
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
 function getPrintSettings(idCompania) {
   return {
     width: Math.min(Math.max(numeric(getCompanySetting(idCompania, 'IMPRESION_WIDTH', '35'), 35), 28), 48),

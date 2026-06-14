@@ -84,6 +84,7 @@
               <v-btn icon="mdi-eye" size="small" variant="text" @click="verDetalleMovimiento(item)" />
               <v-btn icon="mdi-cash-sync" size="small" variant="text" color="success" :disabled="item.estado === 'SUBSANADO'" @click="abrirSubsanacion(item)" />
               <v-btn icon="mdi-pencil" size="small" variant="text" @click="editarMovimiento(item)" />
+              <v-btn icon="mdi-delete" size="small" variant="text" color="error" @click="abrirEliminarMovimiento(item)" />
             </template>
           </v-data-table>
         </v-card>
@@ -335,12 +336,38 @@
               <v-btn icon="mdi-eye" size="small" variant="text" @click="verDetalleMovimiento(item)" />
               <v-btn icon="mdi-cash-sync" size="small" variant="text" color="success" :disabled="item.estado === 'SUBSANADO'" @click="abrirSubsanacion(item)" />
               <v-btn icon="mdi-pencil" size="small" variant="text" @click="editarMovimiento(item)" />
+              <v-btn icon="mdi-delete" size="small" variant="text" color="error" @click="abrirEliminarMovimiento(item)" />
             </template>
           </v-data-table>
         </v-card-text>
       </v-card>
     </v-dialog>
 
+
+    <v-dialog v-model="eliminarDialog" max-width="560">
+      <v-card>
+        <v-card-title>Eliminar movimiento</v-card-title>
+        <v-card-text>
+          <v-alert class="mb-4" type="warning" variant="tonal" density="compact">
+            Esta accion elimina el movimiento y sus subsanaciones. Para continuar escribe ELIMINAR y digita la contrasena configurada en Empresa.
+          </v-alert>
+          <v-list v-if="movimientoAEliminar" density="compact" class="mb-2">
+            <v-list-item title="Movimiento" :subtitle="`#${movimientoAEliminar.idMovimiento} - ${movimientoAEliminar.persona}`" />
+            <v-list-item title="Tipo" :subtitle="tipoLabel(movimientoAEliminar.tipo)" />
+            <v-list-item title="Monto" :subtitle="currency(movimientoAEliminar.monto)" />
+          </v-list>
+          <div class="form-grid">
+            <v-text-field v-model="eliminarForm.confirmacion" label="Escribe ELIMINAR" autocomplete="off" />
+            <v-text-field v-model="eliminarForm.contrasena" label="Contrasena" type="password" autocomplete="current-password" />
+          </div>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="cerrarEliminarMovimiento">Cancelar</v-btn>
+          <v-btn color="error" :loading="eliminandoMovimiento" :disabled="!puedeEliminarMovimiento" @click="eliminarMovimiento">Eliminar</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
     <v-snackbar v-model="snackbar.visible" :color="snackbar.color" timeout="3500">{{ snackbar.text }}</v-snackbar>
   </section>
 </template>
@@ -365,12 +392,15 @@ const loadingMovimientos = ref(false);
 const savingPersona = ref(false);
 const savingMovimiento = ref(false);
 const savingSubsanacion = ref(false);
+const eliminandoMovimiento = ref(false);
 const personaDialog = ref(false);
 const movimientoDialog = ref(false);
 const subsanacionDialog = ref(false);
 const detalleDialog = ref(false);
 const movimientosPersonaDialog = ref(false);
+const eliminarDialog = ref(false);
 const snackbar = ref({ visible: false, text: '', color: 'success' });
+const movimientoAEliminar = ref(null);
 
 const relaciones = ['Dueno', 'Socio', 'Familiar', 'Empleado', 'Tercero', 'Inversionista'];
 const tipos = [
@@ -385,6 +415,7 @@ const tipos = [
 const personaForm = reactive(emptyPersona());
 const movimientoForm = reactive(emptyMovimiento());
 const subsanacionForm = reactive(emptySubsanacion());
+const eliminarForm = reactive(emptyEliminarMovimiento());
 const compraDesdeMovimiento = reactive(emptyCompraDesdeMovimiento());
 const articuloCompraForm = reactive(emptyArticuloCompra());
 let nextArticuloCompraId = 1;
@@ -412,6 +443,7 @@ const movimientosHeaders = [
 const totalNegocioDebe = computed(() => personas.value.reduce((sum, persona) => sum + Number(persona.negocioDebe || 0), 0));
 const totalPersonaDebe = computed(() => personas.value.reduce((sum, persona) => sum + Number(persona.personaDebe || 0), 0));
 const puedeGuardarSubsanacion = computed(() => Number(subsanacionForm.monto || 0) > 0 && Number(subsanacionForm.monto || 0) <= Number(movimientoSeleccionado.value?.saldo || 0));
+const puedeEliminarMovimiento = computed(() => eliminarForm.confirmacion.trim().toUpperCase() === 'ELIMINAR' && eliminarForm.contrasena.length > 0 && movimientoAEliminar.value);
 const puedeConvertirMovimientoEnCompra = computed(() => !movimientoForm.idMovimiento && esEntrada(movimientoForm.tipo));
 const totalCompraDesdeMovimiento = computed(() => compraDesdeMovimiento.productos.reduce((sum, item) => sum + Number(item.cantidadComprada || 0) * Number(item.precioCompra || 0), 0));
 const puedeAgregarArticuloCompra = computed(() => articuloCompraForm.descripcion.trim() && Number(articuloCompraForm.cantidad || 0) > 0 && Number(articuloCompraForm.costo || 0) >= 0);
@@ -442,6 +474,10 @@ function emptySubsanacion() {
 
 function emptyCompraDesdeMovimiento() {
   return { activa: false, idProveedor: null, productos: [] };
+}
+
+function emptyEliminarMovimiento() {
+  return { confirmacion: '', contrasena: '' };
 }
 
 function emptyArticuloCompra() {
@@ -658,6 +694,40 @@ async function guardarSubsanacion() {
   }
 }
 
+function abrirEliminarMovimiento(item) {
+  movimientoAEliminar.value = item;
+  Object.assign(eliminarForm, emptyEliminarMovimiento());
+  eliminarDialog.value = true;
+}
+
+function cerrarEliminarMovimiento() {
+  eliminarDialog.value = false;
+  movimientoAEliminar.value = null;
+  Object.assign(eliminarForm, emptyEliminarMovimiento());
+}
+
+async function eliminarMovimiento() {
+  if (!puedeEliminarMovimiento.value) return;
+  eliminandoMovimiento.value = true;
+  try {
+    const idMovimiento = movimientoAEliminar.value.idMovimiento;
+    await api.post(`/prestamos-aportes/${idMovimiento}/eliminar`, {
+      confirmacion: eliminarForm.confirmacion,
+      contrasena: eliminarForm.contrasena
+    });
+    cerrarEliminarMovimiento();
+    if (detalle.value?.idMovimiento === idMovimiento) {
+      detalle.value = null;
+      detalleDialog.value = false;
+    }
+    notify('Movimiento eliminado');
+    await refrescarPrestamosAportes();
+  } catch (err) {
+    notify(err.message, 'error');
+  } finally {
+    eliminandoMovimiento.value = false;
+  }
+}
 async function verDetalleMovimiento(item) {
   try {
     detalle.value = await api.get(`/prestamos-aportes/${item.idMovimiento}`);
