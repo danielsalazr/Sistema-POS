@@ -224,7 +224,20 @@
 
       <v-col cols="12" lg="5">
         <v-card class="data-card" variant="flat" border>
-          <v-card-title>Ultimas ventas</v-card-title>
+                    <v-card-title class="history-title">
+            <span>Ultimas ventas</span>
+            <v-select
+              v-model="limiteHistorial"
+              :items="limiteHistorialOpciones"
+              item-title="label"
+              item-value="value"
+              label="Mostrar"
+              density="compact"
+              hide-details
+              class="history-limit"
+              @update:model-value="guardarLimiteHistorial"
+            />
+          </v-card-title>
           <v-data-table :key="historialKey" :headers="headers" :items="ventas" :loading="cargandoVentas" item-value="idVenta" density="comfortable">
             <template #item.monto="{ item }">{{ currency(item.monto) }}</template>
             <template #item.saldo="{ item }">{{ currency(Math.max(item.saldo || 0, 0)) }}</template>
@@ -372,10 +385,12 @@ import { currentDateTimeInput, formatLocalDateTime, inputToSql, sqlToInput } fro
 import { session } from '../session.js';
 
 const fechaMovimientoStorageKey = 'dela-pos.ventas.fechaMovimiento';
+const limiteHistorialStorageKey = 'dela-pos.ventas.limiteHistorial';
 
 const productos = ref([]);
 const clientes = ref([]);
 const ventas = ref([]);
+const limiteHistorial = ref(localStorage.getItem(limiteHistorialStorageKey) || '100');
 const mediosPago = ref([]);
 const carrito = ref([]);
 const pagos = ref([]);
@@ -401,6 +416,14 @@ const ventaParaPagar = ref(null);
 const registrarPagoInicial = ref(true);
 const guardandoPagoPosterior = ref(false);
 const snackbar = ref({ visible: false, text: '', color: 'success' });
+
+const limiteHistorialOpciones = [
+  { label: 'Ultimas 100', value: '100' },
+  { label: 'Ultimas 250', value: '250' },
+  { label: 'Ultimas 500', value: '500' },
+  { label: 'Ultimas 1000', value: '1000' },
+  { label: 'Todas', value: 'todos' }
+];
 
 const headers = [
   { title: 'Folio', key: 'idVenta' },
@@ -448,6 +471,11 @@ function estadoPagoColor(estado) {
 
 function notify(text, color = 'success') {
   snackbar.value = { visible: true, text, color };
+}
+
+async function guardarLimiteHistorial() {
+  localStorage.setItem(limiteHistorialStorageKey, limiteHistorial.value);
+  await loadHistorial();
 }
 
 function fechaMovimientoInicial() {
@@ -596,7 +624,7 @@ async function registrarVenta() {
 async function loadHistorial() {
   cargandoVentas.value = true;
   try {
-    ventas.value = await api.get('/ventas/contado');
+    ventas.value = await api.get('/ventas/contado?limite=' + encodeURIComponent(limiteHistorial.value));
     historialKey.value += 1;
   } finally {
     cargandoVentas.value = false;
@@ -742,6 +770,17 @@ onMounted(async () => {
 
 .note-cell {
   min-width: 180px;
+}
+
+.history-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.history-limit {
+  max-width: 180px;
 }
 
 .sale-note {

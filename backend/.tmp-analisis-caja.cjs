@@ -1,0 +1,36 @@
+const Database = require('better-sqlite3');
+const db = new Database('data/sublime-pos.sqlite', { readonly: true });
+const desde = '2026-06-26';
+const hasta = '2026-06-28';
+const idCompania = 1;
+function scalar(sql, params = {}) { return db.prepare(sql).get(params)?.total || 0; }
+function table(title, rows) { console.log('\n## ' + title); console.table(rows); }
+const totals = {
+  desde,
+  hasta,
+  diferenciaReportada: 93630,
+  ventasGeneradas: scalar('SELECT COALESCE(SUM(monto),0) total FROM ventas_contado WHERE idCompania=@idCompania AND date(fecha) BETWEEN date(@desde) AND date(@hasta)', {idCompania, desde, hasta}),
+  ventasCobradas: scalar('SELECT COALESCE(SUM(pago),0) total FROM ventas_contado WHERE idCompania=@idCompania AND date(fecha) BETWEEN date(@desde) AND date(@hasta)', {idCompania, desde, hasta}),
+  comprasGeneradas: scalar('SELECT COALESCE(SUM(monto),0) total FROM compras WHERE idCompania=@idCompania AND date(fecha) BETWEEN date(@desde) AND date(@hasta)', {idCompania, desde, hasta}),
+  comprasPagadas: scalar('SELECT COALESCE(SUM(pago),0) total FROM compras WHERE idCompania=@idCompania AND date(fecha) BETWEEN date(@desde) AND date(@hasta)', {idCompania, desde, hasta}),
+  ingresos: scalar('SELECT COALESCE(SUM(monto),0) total FROM ingresos WHERE idCompania=@idCompania AND date(fecha) BETWEEN date(@desde) AND date(@hasta)', {idCompania, desde, hasta}),
+  egresos: scalar('SELECT COALESCE(SUM(monto),0) total FROM egresos WHERE idCompania=@idCompania AND date(fecha) BETWEEN date(@desde) AND date(@hasta)', {idCompania, desde, hasta}),
+  entradaPA: scalar("SELECT COALESCE(SUM(monto),0) total FROM prestamos_aportes WHERE idCompania=@idCompania AND tipo IN ('APORTE_AL_NEGOCIO','PRESTAMO_AL_NEGOCIO','DEVOLUCION_RECIBIDA') AND date(fecha) BETWEEN date(@desde) AND date(@hasta)", {idCompania, desde, hasta}),
+  salidaPA: scalar("SELECT COALESCE(SUM(monto),0) total FROM prestamos_aportes WHERE idCompania=@idCompania AND tipo IN ('RETIRO_DEL_NEGOCIO','PRESTAMO_DEL_NEGOCIO','DEVOLUCION_PAGADA') AND date(fecha) BETWEEN date(@desde) AND date(@hasta)", {idCompania, desde, hasta}),
+  entradaSub: scalar("SELECT COALESCE(SUM(s.monto),0) total FROM subsanaciones_prestamos_aportes s JOIN prestamos_aportes pa ON pa.idMovimiento=s.idMovimiento WHERE pa.idCompania=@idCompania AND pa.tipo IN ('RETIRO_DEL_NEGOCIO','PRESTAMO_DEL_NEGOCIO','DEVOLUCION_PAGADA') AND date(s.fecha) BETWEEN date(@desde) AND date(@hasta)", {idCompania, desde, hasta}),
+  salidaSub: scalar("SELECT COALESCE(SUM(s.monto),0) total FROM subsanaciones_prestamos_aportes s JOIN prestamos_aportes pa ON pa.idMovimiento=s.idMovimiento WHERE pa.idCompania=@idCompania AND pa.tipo IN ('APORTE_AL_NEGOCIO','PRESTAMO_AL_NEGOCIO','DEVOLUCION_RECIBIDA') AND date(s.fecha) BETWEEN date(@desde) AND date(@hasta)", {idCompania, desde, hasta})
+};
+totals.netoCaja = totals.ventasCobradas + totals.ingresos + totals.entradaPA + totals.entradaSub - totals.egresos - totals.comprasPagadas - totals.salidaPA - totals.salidaSub;
+console.log('\n## RESUMEN');
+console.log(JSON.stringify(totals, null, 2));
+table('Ventas por dia', db.prepare('SELECT date(fecha) dia, COUNT(*) ventas, SUM(monto) generado, SUM(pago) cobrado, SUM(monto-pago) pendiente FROM ventas_contado WHERE idCompania=? AND date(fecha) BETWEEN date(?) AND date(?) GROUP BY date(fecha) ORDER BY dia').all(idCompania, desde, hasta));
+table('Compras por dia', db.prepare('SELECT date(fecha) dia, COUNT(*) compras, SUM(monto) generado, SUM(pago) pagado FROM compras WHERE idCompania=? AND date(fecha) BETWEEN date(?) AND date(?) GROUP BY date(fecha) ORDER BY dia').all(idCompania, desde, hasta));
+table('Ventas pendientes/parciales en rango', db.prepare('SELECT v.idVenta, v.fecha, c.nombreCompleto cliente, v.monto, v.pago, v.monto-v.pago saldo, v.estadoPago FROM ventas_contado v JOIN clientes c ON c.idCliente=v.idCliente WHERE v.idCompania=? AND date(v.fecha) BETWEEN date(?) AND date(?) AND v.pago < v.monto ORDER BY v.fecha').all(idCompania, desde, hasta));
+table('Ventas con pago diferente al detalle pagos_ventas', db.prepare('SELECT v.idVenta, v.fecha, v.monto, v.pago, COALESCE(SUM(pv.monto),0) pagosDetalle, v.pago-COALESCE(SUM(pv.monto),0) diferencia FROM ventas_contado v LEFT JOIN pagos_ventas pv ON pv.idVenta=v.idVenta WHERE v.idCompania=? AND date(v.fecha) BETWEEN date(?) AND date(?) GROUP BY v.idVenta HAVING ABS(diferencia)>0.01 ORDER BY ABS(diferencia) DESC').all(idCompania, desde, hasta));
+table('Ventas por medio de pago en rango', db.prepare('SELECT mp.nombre medio, SUM(pv.monto) total, COUNT(*) pagos FROM pagos_ventas pv JOIN ventas_contado v ON v.idVenta=pv.idVenta JOIN medios_pago mp ON mp.idMedioPago=pv.idMedioPago WHERE v.idCompania=? AND date(v.fecha) BETWEEN date(?) AND date(?) GROUP BY mp.nombre ORDER BY total DESC').all(idCompania, desde, hasta));
+table('Movimientos prestamos/aportes en rango', db.prepare('SELECT pa.idMovimiento, pa.fecha, pf.nombre persona, pa.tipo, pa.monto, pa.descripcion FROM prestamos_aportes pa JOIN personas_financieras pf ON pf.idPersonaFinanciera=pa.idPersonaFinanciera WHERE pa.idCompania=? AND date(pa.fecha) BETWEEN date(?) AND date(?) ORDER BY pa.fecha, pa.idMovimiento').all(idCompania, desde, hasta));
+table('Subsanaciones prestamos/aportes en rango', db.prepare('SELECT s.idSubsanacion, s.fecha, pf.nombre persona, pa.tipo movimientoTipo, s.monto, mp.nombre medioPago, s.referencia, s.descripcion FROM subsanaciones_prestamos_aportes s JOIN prestamos_aportes pa ON pa.idMovimiento=s.idMovimiento JOIN personas_financieras pf ON pf.idPersonaFinanciera=pa.idPersonaFinanciera LEFT JOIN medios_pago mp ON mp.idMedioPago=s.idMedioPago WHERE pa.idCompania=? AND date(s.fecha) BETWEEN date(?) AND date(?) ORDER BY s.fecha, s.idSubsanacion').all(idCompania, desde, hasta));
+table('Ingresos en rango', db.prepare('SELECT idIngreso, fecha, monto, descripcion FROM ingresos WHERE idCompania=? AND date(fecha) BETWEEN date(?) AND date(?) ORDER BY fecha').all(idCompania, desde, hasta));
+table('Egresos en rango', db.prepare('SELECT idEgreso, fecha, monto, descripcion FROM egresos WHERE idCompania=? AND date(fecha) BETWEEN date(?) AND date(?) ORDER BY fecha').all(idCompania, desde, hasta));
+table('Compras pagadas en rango', db.prepare('SELECT c.idCompra, c.fecha, p.nombre proveedor, c.monto, c.pago, c.monto-c.pago saldo FROM compras c LEFT JOIN proveedores p ON p.idProveedor=c.idProveedor WHERE c.idCompania=? AND date(c.fecha) BETWEEN date(?) AND date(?) ORDER BY c.fecha, c.idCompra').all(idCompania, desde, hasta));
+table('Movimientos registrados desde viernes con fecha movimiento anterior', db.prepare("SELECT 'VENTA' tipo, idVenta id, fecha, fechaRegistro, monto, pago FROM ventas_contado WHERE idCompania=? AND date(fechaRegistro)>=date(?) AND date(fecha)<date(?) UNION ALL SELECT 'COMPRA', idCompra, fecha, fechaRegistro, monto, pago FROM compras WHERE idCompania=? AND date(fechaRegistro)>=date(?) AND date(fecha)<date(?) ORDER BY fechaRegistro").all(idCompania, desde, desde, idCompania, desde, desde));

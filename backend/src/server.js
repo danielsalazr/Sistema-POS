@@ -1064,7 +1064,9 @@ app.get('/api/ventas/contado', (req, res) => {
   params.push(companiaId(req));
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const limitSql = req.query.limite === 'todos' ? '' : 'LIMIT 100';
+  const limiteVentas = req.query.limite === 'todos' ? 0 : Math.min(Math.max(numeric(req.query.limite, 100), 1), 5000);
+  const limitSql = limiteVentas ? 'LIMIT ?' : '';
+  const ventasParams = limiteVentas ? [...params, limiteVentas] : params;
 
   const ventas = db.prepare(`
     SELECT v.idVenta, v.monto, v.pago, v.estadoPago, (v.monto - v.pago) AS saldo,
@@ -1079,7 +1081,7 @@ app.get('/api/ventas/contado', (req, res) => {
     GROUP BY v.idVenta
     ORDER BY v.idVenta DESC
     ${limitSql}
-  `).all(...params);
+  `).all(...ventasParams);
 
   const resumen = ventas.reduce((acc, venta) => {
     acc.total += Number(venta.monto || 0);
