@@ -6,6 +6,7 @@ import ProductosView from './views/ProductosView.vue';
 import VentasView from './views/VentasView.vue';
 import ClientesView from './views/ClientesView.vue';
 import CajaView from './views/CajaView.vue';
+import MovimientosDineroView from './views/MovimientosDineroView.vue';
 import UsuariosView from './views/UsuariosView.vue';
 import EmpresaView from './views/EmpresaView.vue';
 import ReportesView from './views/ReportesView.vue';
@@ -27,6 +28,7 @@ const router = createRouter({
     { path: '/clientes', name: 'clientes', component: ClientesView },
     { path: '/proveedores', name: 'proveedores', component: ProveedoresView },
     { path: '/caja', name: 'caja', component: CajaView },
+    { path: '/movimientos-dinero', name: 'movimientos-dinero', component: MovimientosDineroView },
     { path: '/reportes', name: 'reportes', component: ReportesView },
     { path: '/medios-pago', name: 'medios-pago', component: MediosPagoView },
     { path: '/prestamos-aportes', name: 'prestamos-aportes', component: PrestamosAportesView },
@@ -42,3 +44,4 @@ router.beforeEach((to) => {
 });
 
 export default router;
+

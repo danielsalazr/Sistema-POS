@@ -26,7 +26,7 @@
         <v-card-title>{{ form.idProducto ? 'Editar producto' : 'Nuevo producto' }}</v-card-title>
         <v-card-text>
           <div class="form-grid">
-            <v-text-field v-model="form.codigoBarras" label="Codigo de barras" />
+            <v-text-field v-model="form.codigoBarras" label="Codigo o ID del producto" hint="Sugerido automaticamente, editable" persistent-hint />
             <v-text-field v-model="form.descripcion" label="Descripcion" />
             <v-text-field v-model.number="form.precioCompra" label="Precio compra" type="number" />
             <v-text-field v-model.number="form.precioVenta" label="Precio venta" type="number" />
@@ -41,6 +41,21 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <v-dialog v-model="codigoDuplicadoDialog" max-width="460">
+      <v-card>
+        <v-card-title>Codigo ya existente</v-card-title>
+        <v-card-text>
+          <v-alert type="error" variant="tonal" density="compact">
+            Ya existe un producto con el codigo {{ codigoDuplicado }}. Modifica el codigo para poder guardar este producto.
+          </v-alert>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn color="primary" @click="codigoDuplicadoDialog = false">Entendido</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </section>
 </template>
 
@@ -51,7 +66,9 @@ import { api } from '../api.js';
 const loading = ref(false);
 const saving = ref(false);
 const dialog = ref(false);
+const codigoDuplicadoDialog = ref(false);
 const q = ref('');
+const codigoDuplicado = ref('');
 const productos = ref([]);
 const form = reactive(empty());
 
@@ -81,8 +98,18 @@ async function load() {
   }
 }
 
-function nuevo() {
+async function sugerirCodigoProducto() {
+  const payload = await api.get('/productos/siguiente-codigo');
+  return payload.codigoBarras || '';
+}
+
+async function nuevo() {
   Object.assign(form, empty());
+  try {
+    form.codigoBarras = await sugerirCodigoProducto();
+  } catch (_err) {
+    form.codigoBarras = '';
+  }
   dialog.value = true;
 }
 
@@ -98,6 +125,13 @@ async function guardar() {
     else await api.post('/productos', form);
     dialog.value = false;
     await load();
+  } catch (err) {
+    if (err.code === 'PRODUCTO_CODIGO_DUPLICADO') {
+      codigoDuplicado.value = err.codigoBarras || form.codigoBarras;
+      codigoDuplicadoDialog.value = true;
+      return;
+    }
+    throw err;
   } finally {
     saving.value = false;
   }

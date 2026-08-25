@@ -89,6 +89,7 @@ const items = [
   { title: 'Clientes', icon: 'mdi-account-group', to: '/clientes' },
   { title: 'Proveedores', icon: 'mdi-factory', to: '/proveedores' },
   { title: 'Caja', icon: 'mdi-cash-register', to: '/caja' },
+  { title: 'Movimientos de dinero', icon: 'mdi-cash-clock', to: '/movimientos-dinero' },
   { title: 'Reportes', icon: 'mdi-chart-box', to: '/reportes' },
   { title: 'Medios de pago', icon: 'mdi-credit-card-outline', to: '/medios-pago' },
   { title: 'Prestamos y aportes', icon: 'mdi-hand-coin', to: '/prestamos-aportes' },
@@ -140,3 +141,4 @@ onMounted(() => {
   if (session.usuario) loadCompanies();
 });
 </script>
+

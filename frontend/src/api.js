@@ -15,9 +15,10 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || `Error HTTP ${response.status}`);
+    const error = new Error(payload.error || `Error HTTP ${response.status}`);
+    Object.assign(error, payload);
+    throw error;
   }
-
   if (response.status === 204) return null;
   return response.json();
 }

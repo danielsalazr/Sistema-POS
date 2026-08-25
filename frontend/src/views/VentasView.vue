@@ -162,11 +162,14 @@
           <v-card-text>
             <v-row align="center">
               <v-col cols="12" md="7">
-                <div class="payments-header">
+                <v-alert v-if="ventaEditando" class="mb-3" type="info" variant="tonal" density="compact">
+                  Pagado actual: {{ currency(pagoExistenteEdicion) }}. Si el nuevo total queda por debajo, se pedira confirmar la devolucion.
+                </v-alert>
+                <div v-else class="payments-header">
                   <v-switch v-model="registrarPagoInicial" label="Registrar pago inicial" color="primary" density="compact" hide-details />
                   <v-btn v-if="registrarPagoInicial" size="small" variant="tonal" prepend-icon="mdi-plus" @click="agregarPago">Agregar pago</v-btn>
                 </div>
-                <v-row v-if="registrarPagoInicial" v-for="(pagoItem, index) in pagos" :key="index" dense>
+                <v-row v-if="!ventaEditando && registrarPagoInicial" v-for="(pagoItem, index) in pagos" :key="index" dense>
                   <v-col cols="12" md="5">
                     <v-select
                       v-model="pagoItem.idMedioPago"
@@ -196,15 +199,15 @@
                   </div>
                   <div>
                     <span>Pagado</span>
-                    <strong>{{ currency(pagoInicialTotal) }}</strong>
+                    <strong>{{ currency(pagoMostrado) }}</strong>
                   </div>
                   <div>
-                    <span>Cambio</span>
-                    <strong>{{ currency(cambio) }}</strong>
+                    <span>{{ ventaEditando ? 'Por devolver' : 'Cambio' }}</span>
+                    <strong>{{ currency(cambioMostrado) }}</strong>
                   </div>
                   <div>
                     <span>Saldo</span>
-                    <strong>{{ currency(saldo) }}</strong>
+                    <strong>{{ currency(saldoMostrado) }}</strong>
                   </div>
                 </div>
               </v-col>
@@ -249,13 +252,29 @@
               <v-btn icon="mdi-eye" size="small" variant="text" @click="verDetalle(item)" />
               <v-btn icon="mdi-cash-plus" size="small" variant="text" color="success" :disabled="item.estadoPago === 'PAGADA'" @click="abrirPagoVenta(item)" />
               <v-btn icon="mdi-pencil" size="small" variant="text" @click="editarVenta(item)" />
-              <v-btn icon="mdi-cancel" size="small" color="error" variant="text" @click="anularVenta(item)" />
+              <v-btn icon="mdi-cancel" size="small" color="error" variant="text" @click="pedirAnularVenta(item)" />
             </template>
           </v-data-table>
         </v-card>
       </v-col>
     </v-row>
 
+
+    <v-dialog v-model="confirmarAnulacionVentaDialog" max-width="460">
+      <v-card>
+        <v-card-title>Confirmar anulacion</v-card-title>
+        <v-card-text>
+          <v-alert type="warning" variant="tonal" density="compact">
+            Vas a anular la venta {{ ventaParaAnular?.idVenta }}. Esta accion devuelve inventario y elimina la venta.
+          </v-alert>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="cancelarAnulacionVenta">No</v-btn>
+          <v-btn color="error" :loading="anulandoVenta" @click="confirmarAnulacionVenta">Si, anular</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
     <v-snackbar v-model="snackbar.visible" :color="snackbar.color" timeout="3500">
       {{ snackbar.text }}
     </v-snackbar>
@@ -336,6 +355,47 @@
       </v-card>
     </v-dialog>
 
+
+    <v-dialog v-model="devolucionDialog" max-width="760">
+      <v-card>
+        <v-card-title>Confirmar devolucion venta {{ ventaEditando?.idVenta }}</v-card-title>
+        <v-card-text>
+          <v-alert class="mb-4" type="warning" variant="tonal" density="compact">
+            La venta queda con {{ currency(montoDevolucionPendiente) }} pagados de mas. Selecciona por que medio se devolvera ese dinero.
+          </v-alert>
+          <div class="payments-header">
+            <div class="font-weight-medium">Devoluciones</div>
+            <v-btn size="small" variant="tonal" prepend-icon="mdi-plus" @click="agregarDevolucion">Agregar medio</v-btn>
+          </div>
+          <v-row v-for="(devolucion, index) in devolucionesVenta" :key="index" dense>
+            <v-col cols="12" md="5">
+              <v-select v-model="devolucion.idMedioPago" :items="mediosPago" item-title="nombre" item-value="idMedioPago" label="Medio" />
+            </v-col>
+            <v-col cols="8" md="4">
+              <v-text-field v-model.number="devolucion.monto" label="Monto" type="number" />
+            </v-col>
+            <v-col cols="4" md="2">
+              <v-text-field v-model="devolucion.referencia" label="Ref." />
+            </v-col>
+            <v-col cols="12" md="1" class="text-right">
+              <v-btn icon="mdi-delete" color="error" size="small" variant="text" :disabled="devolucionesVenta.length === 1" @click="quitarDevolucion(index)" />
+            </v-col>
+          </v-row>
+          <div class="detalle-totales">
+            <div><span>Por devolver</span><strong>{{ currency(montoDevolucionPendiente) }}</strong></div>
+            <div><span>Distribuido</span><strong>{{ currency(totalDevolucionVenta) }}</strong></div>
+            <div><span>Diferencia</span><strong>{{ currency(Math.abs(montoDevolucionPendiente - totalDevolucionVenta)) }}</strong></div>
+          </div>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="cancelarDevolucionVenta">Cancelar</v-btn>
+          <v-btn color="primary" :loading="guardando" :disabled="!puedeConfirmarDevolucionVenta" @click="confirmarDevolucionVenta">
+            Confirmar y actualizar
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
     <v-dialog v-model="pagoDialog" max-width="720">
       <v-card>
         <v-card-title>Registrar pago venta {{ ventaParaPagar?.idVenta }}</v-card-title>
@@ -395,6 +455,7 @@ const mediosPago = ref([]);
 const carrito = ref([]);
 const pagos = ref([]);
 const pagosPosteriores = ref([]);
+const devolucionesVenta = ref([]);
 const productoPendiente = ref(null);
 const cantidadPendiente = ref(1);
 const clienteSeleccionado = ref(null);
@@ -409,12 +470,18 @@ const guardando = ref(false);
 const imprimiendoTicket = ref(false);
 const detalleDialog = ref(false);
 const pagoDialog = ref(false);
+const confirmarAnulacionVentaDialog = ref(false);
+const devolucionDialog = ref(false);
 const historialKey = ref(0);
 const detalle = ref(null);
 const ventaEditando = ref(null);
 const ventaParaPagar = ref(null);
+const ventaParaAnular = ref(null);
+const devolucionPendientePayload = ref(null);
+const montoDevolucionPendiente = ref(0);
 const registrarPagoInicial = ref(true);
 const guardandoPagoPosterior = ref(false);
+const anulandoVenta = ref(false);
 const snackbar = ref({ visible: false, text: '', color: 'success' });
 
 const limiteHistorialOpciones = [
@@ -438,21 +505,35 @@ const headers = [
 const total = computed(() => carrito.value.reduce((sum, item) => sum + Number(item.precioVenta || 0) * Number(item.cantidadVendida || 0), 0));
 const pagoTotal = computed(() => pagos.value.reduce((sum, item) => sum + Number(item.monto || 0), 0));
 const pagoInicialTotal = computed(() => registrarPagoInicial.value ? pagoTotal.value : 0);
+const pagoExistenteEdicion = computed(() => {
+  if (!ventaEditando.value) return 0;
+  const totalPagos = pagos.value.reduce((sum, item) => sum + Number(item.monto || 0), 0);
+  return pagos.value.length > 0 ? totalPagos : Number(ventaEditando.value.pago || 0);
+});
+const pagoMostrado = computed(() => ventaEditando.value ? pagoExistenteEdicion.value : pagoInicialTotal.value);
 const cambio = computed(() => Math.max(pagoInicialTotal.value - total.value, 0));
+const cambioMostrado = computed(() => Math.max(pagoMostrado.value - total.value, 0));
 const saldo = computed(() => Math.max(total.value - pagoInicialTotal.value, 0));
+const saldoMostrado = computed(() => Math.max(total.value - pagoMostrado.value, 0));
 const puedeCobrar = computed(() => (
   carrito.value.length > 0 &&
   clienteSeleccionado.value &&
-  (!registrarPagoInicial.value || (
+  (ventaEditando.value || !registrarPagoInicial.value || (
     pagos.value.length > 0 &&
     pagos.value.every((pagoItem) => pagoItem.idMedioPago && Number(pagoItem.monto || 0) > 0)
   ))
 ));
 const totalPagoPosterior = computed(() => pagosPosteriores.value.reduce((sum, item) => sum + Number(item.monto || 0), 0));
 const puedeGuardarPagoPosterior = computed(() => pagosPosteriores.value.length > 0 && pagosPosteriores.value.every((pagoItem) => pagoItem.idMedioPago && Number(pagoItem.monto || 0) > 0));
+const totalDevolucionVenta = computed(() => devolucionesVenta.value.reduce((sum, item) => sum + Number(item.monto || 0), 0));
+const puedeConfirmarDevolucionVenta = computed(() => (
+  devolucionesVenta.value.length > 0 &&
+  devolucionesVenta.value.every((item) => item.idMedioPago && Number(item.monto || 0) > 0) &&
+  Math.abs(totalDevolucionVenta.value - montoDevolucionPendiente.value) <= 0.01
+));
 
 watch(total, () => {
-  if (pagos.value.length === 1) ajustarPagoAlTotal();
+  if (!ventaEditando.value && pagos.value.length === 1) ajustarPagoAlTotal();
 });
 
 function currency(value) {
@@ -587,40 +668,54 @@ function cancelarEdicion() {
   limpiarVenta();
 }
 
+async function guardarVentaConPayload(payload) {
+  const venta = ventaEditando.value
+    ? await api.put(`/ventas/contado/${ventaEditando.value.idVenta}`, payload)
+    : await api.post('/ventas/contado', payload);
+  notify(`Venta ${venta.idVenta} ${ventaEditando.value ? 'actualizada' : 'registrada'}. Cambio: ${currency(venta.cambio)}`);
+  if (!ventaEditando.value) await imprimirVenta(venta.idVenta, false);
+  ventaEditando.value = null;
+  devolucionDialog.value = false;
+  devolucionPendientePayload.value = null;
+  montoDevolucionPendiente.value = 0;
+  devolucionesVenta.value = [];
+  limpiarVenta();
+  await Promise.all([buscarProductos(), refrescarVentas()]);
+}
+
+function ventaPayloadBase() {
+  return {
+    idCliente: clienteSeleccionado.value.idCliente,
+    idUsuario: session.usuario.idUsuario,
+    fechaMovimiento: inputToSql(fechaMovimiento.value),
+    pagos: !ventaEditando.value && registrarPagoInicial.value ? pagos.value.map((pagoItem) => ({
+      idMedioPago: pagoItem.idMedioPago,
+      monto: Number(pagoItem.monto),
+      referencia: pagoItem.referencia || ''
+    })) : [],
+    productos: carrito.value.map((item) => ({
+      idProducto: item.idProducto,
+      cantidadVendida: Number(item.cantidadVendida),
+      precioVenta: Number(item.precioVenta),
+      nota: item.nota || ''
+    }))
+  };
+}
+
 async function registrarVenta() {
   guardando.value = true;
   try {
-    const payload = {
-      idCliente: clienteSeleccionado.value.idCliente,
-      idUsuario: session.usuario.idUsuario,
-      fechaMovimiento: inputToSql(fechaMovimiento.value),
-      pagos: registrarPagoInicial.value ? pagos.value.map((pagoItem) => ({
-        idMedioPago: pagoItem.idMedioPago,
-        monto: Number(pagoItem.monto),
-        referencia: pagoItem.referencia || ''
-      })) : [],
-      productos: carrito.value.map((item) => ({
-        idProducto: item.idProducto,
-        cantidadVendida: Number(item.cantidadVendida),
-        precioVenta: Number(item.precioVenta),
-        nota: item.nota || ''
-      }))
-    };
-    const venta = ventaEditando.value
-      ? await api.put(`/ventas/contado/${ventaEditando.value.idVenta}`, payload)
-      : await api.post('/ventas/contado', payload);
-    notify(`Venta ${venta.idVenta} ${ventaEditando.value ? 'actualizada' : 'registrada'}. Cambio: ${currency(venta.cambio)}`);
-    if (!ventaEditando.value) await imprimirVenta(venta.idVenta, false);
-    ventaEditando.value = null;
-    limpiarVenta();
-    await Promise.all([buscarProductos(), refrescarVentas()]);
+    await guardarVentaConPayload(ventaPayloadBase());
   } catch (err) {
-    notify(err.message, 'error');
+    if (err.requiereDevolucion && ventaEditando.value) {
+      abrirModalDevolucion(err, ventaPayloadBase());
+    } else {
+      notify(err.message, 'error');
+    }
   } finally {
     guardando.value = false;
   }
 }
-
 async function loadHistorial() {
   cargandoVentas.value = true;
   try {
@@ -706,6 +801,52 @@ async function editarVenta(venta) {
   }
 }
 
+function abrirModalDevolucion(err, payload) {
+  montoDevolucionPendiente.value = Number(err.exceso || Math.max(pagoExistenteEdicion.value - total.value, 0));
+  devolucionPendientePayload.value = payload;
+  devolucionesVenta.value = [];
+  agregarDevolucion(montoDevolucionPendiente.value);
+  devolucionDialog.value = true;
+}
+
+function agregarDevolucion(monto = 0) {
+  const medio = medioEfectivo();
+  devolucionesVenta.value.push({
+    idMedioPago: medio?.idMedioPago || null,
+    monto: Number(monto || 0),
+    referencia: `Devolucion venta ${ventaEditando.value?.idVenta || ''}`.trim()
+  });
+}
+
+function quitarDevolucion(index) {
+  devolucionesVenta.value.splice(index, 1);
+}
+
+function cancelarDevolucionVenta() {
+  devolucionDialog.value = false;
+  devolucionPendientePayload.value = null;
+  montoDevolucionPendiente.value = 0;
+  devolucionesVenta.value = [];
+}
+
+async function confirmarDevolucionVenta() {
+  if (!devolucionPendientePayload.value || !puedeConfirmarDevolucionVenta.value) return;
+  guardando.value = true;
+  try {
+    await guardarVentaConPayload({
+      ...devolucionPendientePayload.value,
+      devoluciones: devolucionesVenta.value.map((devolucion) => ({
+        idMedioPago: devolucion.idMedioPago,
+        monto: Number(devolucion.monto),
+        referencia: devolucion.referencia || ''
+      }))
+    });
+  } catch (err) {
+    notify(err.message, 'error');
+  } finally {
+    guardando.value = false;
+  }
+}
 function abrirPagoVenta(venta) {
   ventaParaPagar.value = venta;
   pagosPosteriores.value = [];
@@ -742,16 +883,31 @@ async function registrarPagoPosterior() {
   }
 }
 
-async function anularVenta(venta) {
+function pedirAnularVenta(venta) {
+  ventaParaAnular.value = venta;
+  confirmarAnulacionVentaDialog.value = true;
+}
+
+function cancelarAnulacionVenta() {
+  confirmarAnulacionVentaDialog.value = false;
+  ventaParaAnular.value = null;
+}
+
+async function confirmarAnulacionVenta() {
+  if (!ventaParaAnular.value) return;
+  anulandoVenta.value = true;
   try {
-    await api.delete(`/ventas/contado/${venta.idVenta}`);
-    notify(`Venta ${venta.idVenta} anulada`);
+    const idVenta = ventaParaAnular.value.idVenta;
+    await api.delete(`/ventas/contado/${idVenta}`);
+    notify(`Venta ${idVenta} anulada`);
+    cancelarAnulacionVenta();
     await Promise.all([buscarProductos(), refrescarVentas()]);
   } catch (err) {
     notify(err.message, 'error');
+  } finally {
+    anulandoVenta.value = false;
   }
 }
-
 onMounted(async () => {
   await Promise.all([buscarProductos(), buscarClientes(), cargarMediosPago(), loadHistorial()]);
 });

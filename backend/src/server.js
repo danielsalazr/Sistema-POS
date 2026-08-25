@@ -28,6 +28,54 @@ function companiaId(req) {
   return numeric(req.headers['x-compania-id'] || req.query.idCompania || 1, 1);
 }
 
+function queryLimit(req, fallback = 100, max = 5000) {
+  if (req.query.limite === 'todos') return 0;
+  return Math.min(Math.max(numeric(req.query.limite, fallback), 1), max);
+}
+
+function siguienteCodigoProducto(idCompania) {
+  const productos = db.prepare(`
+    SELECT idProducto, codigoBarras
+    FROM productos
+    WHERE idCompania = ?
+  `).all(idCompania);
+
+  let candidato = null;
+  for (const producto of productos) {
+    const codigo = String(producto.codigoBarras || '').trim();
+    const match = codigo.match(/^(.*?)(\d+)$/);
+    if (!match) continue;
+    const numero = Number(match[2]);
+    if (!Number.isFinite(numero)) continue;
+    if (!candidato || numero > candidato.numero) {
+      candidato = { prefijo: match[1], numero, ancho: match[2].length };
+    }
+  }
+
+  if (candidato) {
+    const siguiente = String(candidato.numero + 1).padStart(candidato.ancho, '0');
+    return `${candidato.prefijo}${siguiente}`;
+  }
+
+  const maxId = productos.reduce((max, producto) => Math.max(max, numeric(producto.idProducto, 0)), 0);
+  return String(maxId + 1);
+}
+
+function validarCodigoProductoDisponible(idCompania, codigoBarras, idProductoExcluir = null) {
+  const codigo = String(codigoBarras || '').trim();
+  if (!codigo) return null;
+  const existente = db.prepare(`
+    SELECT idProducto
+    FROM productos
+    WHERE idCompania = ? AND codigoBarras = ? AND (? IS NULL OR idProducto <> ?)
+  `).get(idCompania, codigo, idProductoExcluir, idProductoExcluir);
+  if (!existente) return codigo;
+  const error = new Error(`Ya existe un producto con el codigo ${codigo}`);
+  error.status = 409;
+  error.payload = { code: 'PRODUCTO_CODIGO_DUPLICADO', codigoBarras: codigo };
+  throw error;
+}
+
 app.get('/api/companias', (req, res) => {
   res.json(db.prepare('SELECT * FROM companias WHERE activa = 1 ORDER BY nombre').all());
 });
@@ -76,6 +124,10 @@ app.get('/api/productos/stock/:cantidad', (req, res) => {
   res.json(db.prepare('SELECT * FROM productos WHERE idCompania = ? AND existencia <= ? ORDER BY existencia ASC').all(companiaId(req), numeric(req.params.cantidad)));
 });
 
+app.get('/api/productos/siguiente-codigo', (req, res) => {
+  res.json({ codigoBarras: siguienteCodigoProducto(companiaId(req)) });
+});
+
 app.get('/api/productos/codigo/:codigo', (req, res) => {
   const producto = db.prepare('SELECT * FROM productos WHERE idCompania = ? AND (codigoBarras = ? OR idProducto = ?)').get(companiaId(req), req.params.codigo, numeric(req.params.codigo, -1));
   if (!producto) return res.status(404).json({ error: 'Producto no encontrado' });
@@ -84,12 +136,13 @@ app.get('/api/productos/codigo/:codigo', (req, res) => {
 
 app.post('/api/productos', (req, res) => {
   requireFields(req.body, ['descripcion', 'precioCompra', 'precioVenta', 'existencia', 'stock']);
+  const codigoBarras = validarCodigoProductoDisponible(companiaId(req), req.body.codigoBarras);
   const result = db.prepare(`
     INSERT INTO productos (idCompania, codigoBarras, descripcion, precioCompra, precioVenta, existencia, stock)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     companiaId(req),
-    req.body.codigoBarras || null,
+    codigoBarras,
     req.body.descripcion,
     numeric(req.body.precioCompra),
     numeric(req.body.precioVenta),
@@ -101,12 +154,13 @@ app.post('/api/productos', (req, res) => {
 
 app.put('/api/productos/:id', (req, res) => {
   requireFields(req.body, ['descripcion', 'precioCompra', 'precioVenta', 'existencia', 'stock']);
+  const codigoBarras = validarCodigoProductoDisponible(companiaId(req), req.body.codigoBarras, numeric(req.params.id));
   db.prepare(`
     UPDATE productos
     SET codigoBarras = ?, descripcion = ?, precioCompra = ?, precioVenta = ?, existencia = ?, stock = ?
     WHERE idCompania = ? AND idProducto = ?
   `).run(
-    req.body.codigoBarras || null,
+    codigoBarras,
     req.body.descripcion,
     numeric(req.body.precioCompra),
     numeric(req.body.precioVenta),
@@ -610,7 +664,19 @@ app.put('/api/ajustes/seguridad', (req, res) => {
 app.get('/api/caja/resumen', (req, res) => {
   const idCompania = companiaId(req);
   const ventasGeneradas = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ventas_contado WHERE idCompania = ?').get(idCompania).total;
-  const ventasCobradas = db.prepare('SELECT COALESCE(SUM(pago), 0) total FROM ventas_contado WHERE idCompania = ?').get(idCompania).total;
+  const ventasCobradas = db.prepare(`
+    SELECT COALESCE(SUM(CASE
+      WHEN p.cantidadPagos IS NULL THEN v.pago
+      ELSE p.totalPagos
+    END), 0) total
+    FROM ventas_contado v
+    LEFT JOIN (
+      SELECT idVenta, COUNT(*) AS cantidadPagos, SUM(monto) AS totalPagos
+      FROM pagos_ventas
+      GROUP BY idVenta
+    ) p ON p.idVenta = v.idVenta
+    WHERE v.idCompania = ?
+  `).get(idCompania).total;
   const abonos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM abonos').get().total;
   const ingresos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM ingresos WHERE idCompania = ?').get(idCompania).total;
   const egresos = db.prepare('SELECT COALESCE(SUM(monto), 0) total FROM egresos WHERE idCompania = ?').get(idCompania).total;
@@ -709,9 +775,238 @@ app.get('/api/caja/resumen', (req, res) => {
   });
 });
 
+app.get('/api/caja/movimientos', (req, res) => {
+  const idCompania = companiaId(req);
+  const limite = queryLimit(req, 100, 5000);
+
+  const todosMovimientos = db.prepare(`
+    SELECT *
+    FROM (
+      SELECT v.idCompania,
+             'PAGO_VENTA-' || pv.idPagoVenta AS idMovimientoCaja,
+             'VENTA' AS origen,
+             CASE WHEN pv.monto < 0 THEN 'Devolucion de venta' ELSE 'Pago de venta' END AS tipo,
+             CASE WHEN pv.monto < 0 THEN 'SALIDA' ELSE 'ENTRADA' END AS direccion,
+             ABS(pv.monto) AS monto,
+             COALESCE(v.fechaRegistro, v.fecha) AS fecha,
+             COALESCE(v.fechaRegistro, v.fecha) AS fechaRegistro,
+             mp.nombre AS medioPago,
+             'Venta #' || v.idVenta || ' - ' || c.nombreCompleto AS descripcion,
+             pv.referencia,
+             u.nombre AS usuario,
+             c.nombreCompleto AS tercero,
+             v.idVenta AS idReferencia,
+             pv.idPagoVenta AS orden
+      FROM pagos_ventas pv
+      INNER JOIN ventas_contado v ON v.idVenta = pv.idVenta
+      INNER JOIN clientes c ON c.idCliente = v.idCliente
+      INNER JOIN usuarios u ON u.idUsuario = v.idUsuario
+      LEFT JOIN medios_pago mp ON mp.idMedioPago = pv.idMedioPago
+
+      UNION ALL
+
+      SELECT v.idCompania,
+             'PAGO_VENTA-HIST-' || v.idVenta AS idMovimientoCaja,
+             'VENTA' AS origen,
+             'Pago historico de venta' AS tipo,
+             'ENTRADA' AS direccion,
+             v.pago AS monto,
+             COALESCE(v.fechaRegistro, v.fecha) AS fecha,
+             COALESCE(v.fechaRegistro, v.fecha) AS fechaRegistro,
+             NULL AS medioPago,
+             'Venta #' || v.idVenta || ' - ' || c.nombreCompleto AS descripcion,
+             'Sin detalle de medio de pago' AS referencia,
+             u.nombre AS usuario,
+             c.nombreCompleto AS tercero,
+             v.idVenta AS idReferencia,
+             v.idVenta AS orden
+      FROM ventas_contado v
+      INNER JOIN clientes c ON c.idCliente = v.idCliente
+      INNER JOIN usuarios u ON u.idUsuario = v.idUsuario
+      LEFT JOIN pagos_ventas pv ON pv.idVenta = v.idVenta
+      WHERE pv.idVenta IS NULL AND v.pago > 0
+
+      UNION ALL
+
+      SELECT c.idCompania,
+             'COMPRA-' || c.idCompra AS idMovimientoCaja,
+             'COMPRA' AS origen,
+             'Pago de compra' AS tipo,
+             'SALIDA' AS direccion,
+             c.pago AS monto,
+             COALESCE(c.fechaRegistro, c.fecha) AS fecha,
+             COALESCE(c.fechaRegistro, c.fecha) AS fechaRegistro,
+             NULL AS medioPago,
+             'Compra #' || c.idCompra || ' - ' || p.nombre AS descripcion,
+             NULL AS referencia,
+             u.nombre AS usuario,
+             p.nombre AS tercero,
+             c.idCompra AS idReferencia,
+             c.idCompra AS orden
+      FROM compras c
+      INNER JOIN proveedores p ON p.idProveedor = c.idProveedor
+      INNER JOIN usuarios u ON u.idUsuario = c.idUsuario
+      WHERE c.pago > 0
+
+      UNION ALL
+
+      SELECT i.idCompania,
+             'INGRESO-' || i.idIngreso AS idMovimientoCaja,
+             'INGRESO' AS origen,
+             'Ingreso manual' AS tipo,
+             'ENTRADA' AS direccion,
+             i.monto,
+             i.fecha,
+             i.fecha AS fechaRegistro,
+             NULL AS medioPago,
+             i.descripcion,
+             NULL AS referencia,
+             u.nombre AS usuario,
+             NULL AS tercero,
+             i.idIngreso AS idReferencia,
+             i.idIngreso AS orden
+      FROM ingresos i
+      INNER JOIN usuarios u ON u.idUsuario = i.idUsuario
+
+      UNION ALL
+
+      SELECT e.idCompania,
+             'EGRESO-' || e.idEgreso AS idMovimientoCaja,
+             'EGRESO' AS origen,
+             'Egreso manual' AS tipo,
+             'SALIDA' AS direccion,
+             e.monto,
+             e.fecha,
+             e.fecha AS fechaRegistro,
+             NULL AS medioPago,
+             e.descripcion,
+             NULL AS referencia,
+             u.nombre AS usuario,
+             NULL AS tercero,
+             e.idEgreso AS idReferencia,
+             e.idEgreso AS orden
+      FROM egresos e
+      INNER JOIN usuarios u ON u.idUsuario = e.idUsuario
+
+      UNION ALL
+
+      SELECT pa.idCompania,
+             'PRESTAMO_APORTE-' || pa.idMovimiento AS idMovimientoCaja,
+             'PRESTAMOS_APORTES' AS origen,
+             pa.tipo,
+             CASE
+               WHEN pa.tipo IN ('APORTE_AL_NEGOCIO', 'PRESTAMO_AL_NEGOCIO', 'DEVOLUCION_RECIBIDA') THEN 'ENTRADA'
+               ELSE 'SALIDA'
+             END AS direccion,
+             pa.monto,
+             pa.fecha,
+             pa.fecha AS fechaRegistro,
+             NULL AS medioPago,
+             pa.descripcion,
+             NULL AS referencia,
+             u.nombre AS usuario,
+             pf.nombre AS tercero,
+             pa.idMovimiento AS idReferencia,
+             pa.idMovimiento AS orden
+      FROM prestamos_aportes pa
+      INNER JOIN personas_financieras pf ON pf.idPersonaFinanciera = pa.idPersonaFinanciera
+      INNER JOIN usuarios u ON u.idUsuario = pa.idUsuario
+
+      UNION ALL
+
+      SELECT pa.idCompania,
+             'SUBSANACION-' || s.idSubsanacion AS idMovimientoCaja,
+             'SUBSANACION' AS origen,
+             'Subsanacion de ' || pa.tipo AS tipo,
+             CASE
+               WHEN pa.tipo IN ('RETIRO_DEL_NEGOCIO', 'PRESTAMO_DEL_NEGOCIO', 'DEVOLUCION_PAGADA') THEN 'ENTRADA'
+               ELSE 'SALIDA'
+             END AS direccion,
+             s.monto,
+             s.fecha,
+             s.fecha AS fechaRegistro,
+             mp.nombre AS medioPago,
+             s.descripcion,
+             s.referencia,
+             u.nombre AS usuario,
+             pf.nombre AS tercero,
+             s.idSubsanacion AS idReferencia,
+             s.idSubsanacion AS orden
+      FROM subsanaciones_prestamos_aportes s
+      INNER JOIN prestamos_aportes pa ON pa.idMovimiento = s.idMovimiento
+      INNER JOIN personas_financieras pf ON pf.idPersonaFinanciera = pa.idPersonaFinanciera
+      INNER JOIN usuarios u ON u.idUsuario = s.idUsuario
+      LEFT JOIN medios_pago mp ON mp.idMedioPago = s.idMedioPago
+
+      UNION ALL
+
+      SELECT @idCompania AS idCompania,
+             'ABONO-' || a.idAbono AS idMovimientoCaja,
+             'ABONO' AS origen,
+             'Abono' AS tipo,
+             'ENTRADA' AS direccion,
+             a.monto,
+             a.fecha,
+             a.fecha AS fechaRegistro,
+             NULL AS medioPago,
+             'Abono apartado #' || a.idApartado || ' - ' || c.nombreCompleto AS descripcion,
+             NULL AS referencia,
+             u.nombre AS usuario,
+             c.nombreCompleto AS tercero,
+             a.idAbono AS idReferencia,
+             a.idAbono AS orden
+      FROM abonos a
+      INNER JOIN apartados ap ON ap.idApartado = a.idApartado
+      INNER JOIN clientes c ON c.idCliente = ap.idCliente
+      INNER JOIN usuarios u ON u.idUsuario = a.idUsuario
+    ) movimientos
+    WHERE idCompania = @idCompania
+    ORDER BY fechaRegistro ASC, orden ASC
+  `).all({ idCompania });
+
+  let saldoCaja = 0;
+  const movimientosConSaldo = todosMovimientos.map((movimiento) => {
+    const monto = Number(movimiento.monto || 0);
+    saldoCaja += movimiento.direccion === 'ENTRADA' ? monto : -monto;
+    return { ...movimiento, saldoCaja };
+  });
+
+  const desde = req.query.desde ? String(req.query.desde).slice(0, 10) : '';
+  const hasta = req.query.hasta ? String(req.query.hasta).slice(0, 10) : '';
+  const origen = req.query.origen && req.query.origen !== 'TODOS' ? String(req.query.origen) : '';
+
+  const filtrados = movimientosConSaldo.filter((movimiento) => {
+    const fecha = String(movimiento.fecha || '').slice(0, 10);
+    if (desde && fecha < desde) return false;
+    if (hasta && fecha > hasta) return false;
+    if (origen && movimiento.origen !== origen) return false;
+    return true;
+  });
+
+  const ordenados = filtrados.sort((a, b) => {
+    const fechaDiff = String(b.fechaRegistro || '').localeCompare(String(a.fechaRegistro || ''));
+    if (fechaDiff !== 0) return fechaDiff;
+    return Number(b.orden || 0) - Number(a.orden || 0);
+  });
+  const movimientos = limite ? ordenados.slice(0, limite) : ordenados;
+
+  const resumen = movimientos.reduce((acc, movimiento) => {
+    const monto = Number(movimiento.monto || 0);
+    if (movimiento.direccion === 'ENTRADA') acc.entradas += monto;
+    if (movimiento.direccion === 'SALIDA') acc.salidas += monto;
+    acc.neto = acc.entradas - acc.salidas;
+    acc.cantidad += 1;
+    return acc;
+  }, { entradas: 0, salidas: 0, neto: 0, cantidad: 0 });
+
+  res.json({ movimientos, resumen });
+});
 app.get('/api/compras', (req, res) => {
+  const limite = queryLimit(req, 100, 5000);
+  const limitSql = limite ? 'LIMIT ?' : '';
+  const params = limite ? [companiaId(req), limite] : [companiaId(req)];
   const compras = db.prepare(`
-    SELECT c.idCompra, c.monto, c.pago, c.fecha, c.idProveedor, c.idUsuario,
+    SELECT c.idCompra, c.monto, c.pago, MAX(c.monto - c.pago, 0) AS saldo, c.fecha, c.idProveedor, c.idUsuario,
            p.nombre AS proveedor, u.nombre AS usuario,
            COUNT(pc.idCompra) AS cantidadProductos
     FROM compras c
@@ -721,8 +1016,8 @@ app.get('/api/compras', (req, res) => {
     WHERE c.idCompania = ?
     GROUP BY c.idCompra
     ORDER BY c.idCompra DESC
-    LIMIT 100
-  `).all(companiaId(req));
+    ${limitSql}
+  `).all(...params);
   res.json(compras);
 });
 
@@ -1351,9 +1646,30 @@ app.put('/api/ventas/contado/:id', (req, res) => {
       productosVenta.push({ ...producto, cantidadVendida: cantidad, precioVenta, nota: String(item.nota || '').trim() });
     }
 
-    const pagoAplicado = ajustarPagosAlMonto(normalizarPagos(req.body.pagos, req.body.pago), monto);
-    const pagos = pagoAplicado.pagos;
-    const pago = pagoAplicado.pago;
+    let pagosExistentes = db.prepare('SELECT * FROM pagos_ventas WHERE idVenta = ? ORDER BY idPagoVenta').all(req.params.id);
+    const insertarPago = db.prepare('INSERT INTO pagos_ventas (idVenta, idMedioPago, monto, referencia) VALUES (?, ?, ?, ?)');
+    if (pagosExistentes.length === 0 && numeric(ventaActual.pago, 0) > 0) {
+      const efectivo = db.prepare("SELECT idMedioPago FROM medios_pago WHERE idCompania = ? AND lower(nombre) = 'efectivo' ORDER BY idMedioPago LIMIT 1").get(companiaId(req));
+      insertarPago.run(req.params.id, efectivo?.idMedioPago || 1, numeric(ventaActual.pago, 0), 'Pago historico registrado antes de editar la venta');
+      pagosExistentes = db.prepare('SELECT * FROM pagos_ventas WHERE idVenta = ? ORDER BY idPagoVenta').all(req.params.id);
+    }
+    const pagoExistente = pagosExistentes.reduce((sum, pago) => sum + numeric(pago.monto), 0);
+    const exceso = Math.max(pagoExistente - monto, 0);
+    let totalDevolucion = 0;
+    let devoluciones = [];
+
+    if (exceso > 0) {
+      devoluciones = normalizarDevolucionesVenta(req.body.devoluciones);
+      totalDevolucion = devoluciones.reduce((sum, devolucion) => sum + numeric(devolucion.monto), 0);
+      if (devoluciones.length === 0 || Math.abs(totalDevolucion - exceso) > 0.01) {
+        const error = new Error(`La venta queda con ${exceso} pagados de mas. Debes confirmar la devolucion antes de guardar.`);
+        error.status = 409;
+        error.payload = { requiereDevolucion: true, exceso, pagoActual: pagoExistente, nuevoTotal: monto };
+        throw error;
+      }
+    }
+
+    const pago = Math.max(pagoExistente - totalDevolucion, 0);
     const estadoPago = estadoPagoDesdeMontos(monto, pago);
 
     db.prepare(`
@@ -1363,7 +1679,6 @@ app.put('/api/ventas/contado/:id', (req, res) => {
     `).run(monto, pago, estadoPago, normalizeDateTimeInput(req.body.fechaMovimiento || req.body.fecha), req.body.idCliente, req.body.idUsuario, companiaId(req), req.params.id);
 
     db.prepare('DELETE FROM productos_vendidos WHERE idVenta = ?').run(req.params.id);
-    db.prepare('DELETE FROM pagos_ventas WHERE idVenta = ?').run(req.params.id);
 
     const insertarProducto = db.prepare(`
       INSERT INTO productos_vendidos (
@@ -1372,8 +1687,6 @@ app.put('/api/ventas/contado/:id', (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const actualizarExistencia = db.prepare('UPDATE productos SET existencia = existencia - ? WHERE idProducto = ?');
-    const insertarPago = db.prepare('INSERT INTO pagos_ventas (idVenta, idMedioPago, monto, referencia) VALUES (?, ?, ?, ?)');
-
     for (const producto of productosVenta) {
       insertarProducto.run(
         producto.idProducto,
@@ -1389,25 +1702,25 @@ app.put('/api/ventas/contado/:id', (req, res) => {
       actualizarExistencia.run(producto.cantidadVendida, producto.idProducto);
     }
 
-    for (const pagoItem of pagos) {
-      const medio = db.prepare('SELECT * FROM medios_pago WHERE idMedioPago = ? AND activo = 1').get(pagoItem.idMedioPago);
+    for (const devolucion of devoluciones) {
+      const medio = db.prepare('SELECT * FROM medios_pago WHERE idMedioPago = ? AND activo = 1').get(devolucion.idMedioPago);
       if (!medio) {
-        const error = new Error(`Medio de pago ${pagoItem.idMedioPago} no disponible`);
+        const error = new Error(`Medio de pago ${devolucion.idMedioPago} no disponible`);
         error.status = 400;
         throw error;
       }
-      insertarPago.run(req.params.id, pagoItem.idMedioPago, numeric(pagoItem.monto), pagoItem.referencia || null);
+      const referencia = devolucion.referencia || `Devolucion por ajuste de venta ${req.params.id}`;
+      insertarPago.run(req.params.id, devolucion.idMedioPago, -numeric(devolucion.monto), referencia);
     }
 
-    return { cambio: pagoAplicado.cambio };
+    return { cambio: 0, devolucion: totalDevolucion, pagoActual: pagoExistente, nuevoTotal: monto };
   });
 
   const resultadoVenta = editarVenta();
   const ventaEditada = db.prepare('SELECT * FROM ventas_contado WHERE idCompania = ? AND idVenta = ?').get(companiaId(req), req.params.id);
   const productos = db.prepare('SELECT * FROM productos_vendidos WHERE idVenta = ?').all(req.params.id);
-  res.json({ ...ventaEditada, productos, cambio: resultadoVenta.cambio });
+  res.json({ ...ventaEditada, productos, ...resultadoVenta });
 });
-
 app.post('/api/ventas/contado/:id/pagos', (req, res) => {
   requireFields(req.body, ['pagos']);
   if (!Array.isArray(req.body.pagos) || req.body.pagos.length === 0) {
@@ -1501,9 +1814,18 @@ app.post('/api/egresos', (req, res) => {
 
 app.use((err, req, res, next) => {
   const status = err.status || 500;
-  res.status(status).json({ error: err.message || 'Error interno' });
+  res.status(status).json({ error: err.message || 'Error interno', ...(err.payload || {}) });
 });
-
+function normalizarDevolucionesVenta(devoluciones) {
+  if (!Array.isArray(devoluciones)) return [];
+  return devoluciones
+    .map((devolucion) => ({
+      idMedioPago: devolucion.idMedioPago,
+      monto: numeric(devolucion.monto),
+      referencia: devolucion.referencia || ''
+    }))
+    .filter((devolucion) => devolucion.idMedioPago && devolucion.monto > 0);
+}
 function normalizarPagos(pagos, pagoAnterior) {
   if (Array.isArray(pagos)) {
     return pagos
@@ -1768,3 +2090,4 @@ function formatTicketDate(value) {
 app.listen(port, () => {
   console.log(`API escuchando en http://localhost:${port}`);
 });
+

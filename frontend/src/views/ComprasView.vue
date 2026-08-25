@@ -41,7 +41,7 @@
                 <v-text-field v-model="descripcionPendiente" label="Descripcion" placeholder="Fresas, banano, Nutella..." />
               </v-col>
               <v-col cols="6" md="3">
-                <v-text-field v-model.number="cantidadPendiente" label="Cantidad" min="1" type="number" />
+                <v-text-field v-model.number="cantidadPendiente" label="Cantidad" min="0.001" step="0.001" type="number" />
               </v-col>
               <v-col cols="6" md="3">
                 <v-text-field v-model.number="costoPendiente" label="Costo" min="0" type="number" />
@@ -73,7 +73,7 @@
                   </td>
                   <td class="text-right">{{ currency(item.precioCompra) }}</td>
                   <td class="text-right qty-cell">
-                    <v-text-field v-model.number="item.cantidadComprada" type="number" min="1" density="compact" hide-details />
+                    <v-text-field v-model.number="item.cantidadComprada" type="number" min="0.001" step="0.001" density="compact" hide-details />
                   </td>
                   <td class="text-right">{{ currency(item.precioCompra * item.cantidadComprada) }}</td>
                   <td class="text-right">
@@ -113,14 +113,28 @@
 
       <v-col cols="12" lg="5">
         <v-card class="data-card" variant="flat" border>
-          <v-card-title>Ultimas compras</v-card-title>
+          <v-card-title class="history-title">
+            <span>Ultimas compras</span>
+            <v-select
+              v-model="limiteHistorial"
+              :items="limiteHistorialOpciones"
+              item-title="label"
+              item-value="value"
+              label="Mostrar"
+              density="compact"
+              hide-details
+              class="history-limit"
+              @update:model-value="guardarLimiteHistorial"
+            />
+          </v-card-title>
           <v-data-table :key="historialKey" :headers="headers" :items="compras" :loading="cargandoCompras" item-value="idCompra" density="comfortable">
             <template #item.monto="{ item }">{{ currency(item.monto) }}</template>
+            <template #item.saldo="{ item }">{{ currency(Math.max(item.saldo || 0, 0)) }}</template>
             <template #item.fecha="{ item }">{{ formatDate(item.fecha) }}</template>
             <template #item.actions="{ item }">
               <v-btn icon="mdi-eye" size="small" variant="text" @click="verDetalle(item)" />
               <v-btn icon="mdi-pencil" size="small" variant="text" @click="editarCompra(item)" />
-              <v-btn icon="mdi-cancel" size="small" color="error" variant="text" @click="anularCompra(item)" />
+              <v-btn icon="mdi-cancel" size="small" color="error" variant="text" @click="pedirAnularCompra(item)" />
             </template>
           </v-data-table>
         </v-card>
@@ -164,6 +178,22 @@
       </v-card>
     </v-dialog>
 
+
+    <v-dialog v-model="confirmarAnulacionCompraDialog" max-width="460">
+      <v-card>
+        <v-card-title>Confirmar anulacion</v-card-title>
+        <v-card-text>
+          <v-alert type="warning" variant="tonal" density="compact">
+            Vas a anular la compra {{ compraParaAnular?.idCompra }}. Esta accion elimina el registro de compra.
+          </v-alert>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="cancelarAnulacionCompra">No</v-btn>
+          <v-btn color="error" :loading="anulandoCompra" @click="confirmarAnulacionCompra">Si, anular</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
     <v-snackbar v-model="snackbar.visible" :color="snackbar.color" timeout="3500">{{ snackbar.text }}</v-snackbar>
   </section>
 </template>
@@ -173,6 +203,8 @@ import { computed, nextTick, onMounted, ref } from 'vue';
 import { api } from '../api.js';
 import { formatLocalDateTime, inputToSql, sqlToDateInput, todayDateInput } from '../dates.js';
 import { session } from '../session.js';
+
+const limiteHistorialStorageKey = 'dela-pos.compras.limiteHistorial';
 
 const proveedores = ref([]);
 const compras = ref([]);
@@ -187,17 +219,30 @@ const pago = ref(0);
 const cargandoProveedores = ref(false);
 const cargandoCompras = ref(false);
 const guardando = ref(false);
+const anulandoCompra = ref(false);
 const detalleDialog = ref(false);
+const confirmarAnulacionCompraDialog = ref(false);
 const historialKey = ref(0);
+const limiteHistorial = ref(localStorage.getItem(limiteHistorialStorageKey) || '100');
 const detalle = ref(null);
 const compraEditando = ref(null);
+const compraParaAnular = ref(null);
 const snackbar = ref({ visible: false, text: '', color: 'success' });
 let nextLineaId = 1;
+
+const limiteHistorialOpciones = [
+  { label: 'Ultimos 100', value: '100' },
+  { label: 'Ultimos 200', value: '200' },
+  { label: 'Ultimos 500', value: '500' },
+  { label: 'Ultimos 1000', value: '1000' },
+  { label: 'Todos', value: 'todos' }
+];
 
 const headers = [
   { title: 'Folio', key: 'idCompra' },
   { title: 'Proveedor', key: 'proveedor' },
   { title: 'Total', key: 'monto' },
+  { title: 'Saldo', key: 'saldo' },
   { title: 'Fecha', key: 'fecha' },
   { title: '', key: 'actions', sortable: false, align: 'end' }
 ];
@@ -232,11 +277,16 @@ async function buscarProveedores() {
 async function loadHistorial() {
   cargandoCompras.value = true;
   try {
-    compras.value = await api.get('/compras');
+    compras.value = await api.get('/compras?limite=' + encodeURIComponent(limiteHistorial.value));
     historialKey.value += 1;
   } finally {
     cargandoCompras.value = false;
   }
+}
+
+async function guardarLimiteHistorial() {
+  localStorage.setItem(limiteHistorialStorageKey, limiteHistorial.value);
+  await loadHistorial();
 }
 
 async function refrescarCompras() {
@@ -248,7 +298,8 @@ async function refrescarCompras() {
 
 async function agregarProductoPendiente() {
   if (!puedeAgregarItem.value) return;
-  const cantidad = Math.max(Number(cantidadPendiente.value || 1), 1);
+  const cantidad = Number(cantidadPendiente.value || 0);
+  if (cantidad <= 0) return;
   carrito.value.push({
     lineaId: nextLineaId++,
     idProducto: null,
@@ -353,16 +404,31 @@ async function editarCompra(compra) {
   }
 }
 
-async function anularCompra(compra) {
+function pedirAnularCompra(compra) {
+  compraParaAnular.value = compra;
+  confirmarAnulacionCompraDialog.value = true;
+}
+
+function cancelarAnulacionCompra() {
+  confirmarAnulacionCompraDialog.value = false;
+  compraParaAnular.value = null;
+}
+
+async function confirmarAnulacionCompra() {
+  if (!compraParaAnular.value) return;
+  anulandoCompra.value = true;
   try {
-    await api.delete(`/compras/${compra.idCompra}`);
-    notify(`Compra ${compra.idCompra} anulada`);
+    const idCompra = compraParaAnular.value.idCompra;
+    await api.delete(`/compras/${idCompra}`);
+    notify(`Compra ${idCompra} anulada`);
+    cancelarAnulacionCompra();
     await refrescarCompras();
   } catch (err) {
     notify(err.message, 'error');
+  } finally {
+    anulandoCompra.value = false;
   }
 }
-
 onMounted(async () => {
   await Promise.all([buscarProveedores(), loadHistorial()]);
 });
@@ -377,6 +443,17 @@ onMounted(async () => {
 
 .qty-cell {
   width: 120px;
+}
+
+.history-title {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.history-limit {
+  max-width: 180px;
 }
 
 .totals {
