@@ -42,6 +42,14 @@ for (const table of tablesWithCompany) {
   }
 }
 
+const clientesColumns = db.prepare('PRAGMA table_info(clientes)').all().map((column) => column.name);
+if (clientesColumns.length && !clientesColumns.includes('nit')) {
+  db.exec("ALTER TABLE clientes ADD COLUMN nit TEXT DEFAULT ''");
+}
+if (clientesColumns.length && !clientesColumns.includes('direccion')) {
+  db.exec("ALTER TABLE clientes ADD COLUMN direccion TEXT DEFAULT ''");
+}
+
 const empresaSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'empresa'").get()?.sql || '';
 if (empresaSql.includes('CHECK (idEmpresa = 1)')) {
   db.exec('ALTER TABLE empresa RENAME TO empresa_old');
@@ -146,7 +154,7 @@ if (idProductoCompra?.notnull) {
 }
 
 const defaults = db.transaction(() => {
-  db.prepare('INSERT OR IGNORE INTO clientes (idCliente, nombreCompleto, numeroTelefono) VALUES (1, ?, ?)').run('Mostrador', '0000000000');
+  db.prepare('INSERT OR IGNORE INTO clientes (idCliente, idCompania, nombreCompleto, numeroTelefono, nit, direccion) VALUES (1, 1, ?, ?, ?, ?)').run('Mostrador', '0000000000', '', '');
   db.prepare('INSERT INTO empresa (idCompania, nombre, direccion, telefono, mensajePersonal) SELECT 1, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM empresa WHERE idCompania = 1)').run('', '', '', '');
   db.prepare('INSERT OR IGNORE INTO usuarios (idUsuario, nombre, contrasena) VALUES (1, ?, ?)').run('admin', 'admin');
 

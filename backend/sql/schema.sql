@@ -17,8 +17,11 @@ CREATE TABLE IF NOT EXISTS companias (
 
 CREATE TABLE IF NOT EXISTS clientes (
   idCliente INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  idCompania INTEGER,
   nombreCompleto TEXT NOT NULL,
-  numeroTelefono TEXT NOT NULL
+  numeroTelefono TEXT NOT NULL,
+  nit TEXT DEFAULT '',
+  direccion TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS proveedores (

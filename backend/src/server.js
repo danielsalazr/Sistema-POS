@@ -181,21 +181,20 @@ app.get('/api/clientes', (req, res) => {
   const q = `%${req.query.q || ''}%`;
   res.json(db.prepare(`
     SELECT * FROM clientes
-    WHERE idCompania = ? AND (nombreCompleto LIKE ? OR numeroTelefono LIKE ?)
+    WHERE idCompania = ? AND (nombreCompleto LIKE ? OR numeroTelefono LIKE ? OR nit LIKE ? OR direccion LIKE ?)
     ORDER BY nombreCompleto
-  `).all(companiaId(req), q, q));
+  `).all(companiaId(req), q, q, q, q));
 });
-
 app.post('/api/clientes', (req, res) => {
   requireFields(req.body, ['nombreCompleto', 'numeroTelefono']);
-  const result = db.prepare('INSERT INTO clientes (idCompania, nombreCompleto, numeroTelefono) VALUES (?, ?, ?)').run(companiaId(req), req.body.nombreCompleto, req.body.numeroTelefono);
-  res.status(201).json(db.prepare('SELECT * FROM clientes WHERE idCliente = ?').get(result.lastInsertRowid));
+  const result = db.prepare('INSERT INTO clientes (idCompania, nombreCompleto, numeroTelefono, nit, direccion) VALUES (?, ?, ?, ?, ?)').run(companiaId(req), req.body.nombreCompleto, req.body.numeroTelefono, req.body.nit || '', req.body.direccion || '');
+  res.status(201).json(db.prepare('SELECT * FROM clientes WHERE idCompania = ? AND idCliente = ?').get(companiaId(req), result.lastInsertRowid));
 });
 
 app.put('/api/clientes/:id', (req, res) => {
   requireFields(req.body, ['nombreCompleto', 'numeroTelefono']);
-  db.prepare('UPDATE clientes SET nombreCompleto = ?, numeroTelefono = ? WHERE idCliente = ?').run(req.body.nombreCompleto, req.body.numeroTelefono, req.params.id);
-  res.json(db.prepare('SELECT * FROM clientes WHERE idCliente = ?').get(req.params.id));
+  db.prepare('UPDATE clientes SET nombreCompleto = ?, numeroTelefono = ?, nit = ?, direccion = ? WHERE idCompania = ? AND idCliente = ?').run(req.body.nombreCompleto, req.body.numeroTelefono, req.body.nit || '', req.body.direccion || '', companiaId(req), req.params.id);
+  res.json(db.prepare('SELECT * FROM clientes WHERE idCompania = ? AND idCliente = ?').get(companiaId(req), req.params.id));
 });
 
 app.delete('/api/clientes/:id', (req, res) => {
@@ -1467,7 +1466,7 @@ app.get('/api/ventas/contado', (req, res) => {
 
 app.get('/api/ventas/contado/:id', (req, res) => {
   const venta = db.prepare(`
-    SELECT v.*, (v.monto - v.pago) AS saldo, c.nombreCompleto AS cliente, c.numeroTelefono, u.nombre AS usuario
+    SELECT v.*, (v.monto - v.pago) AS saldo, c.nombreCompleto AS cliente, c.numeroTelefono, c.nit, c.direccion AS direccionCliente, u.nombre AS usuario
     FROM ventas_contado v
     INNER JOIN clientes c ON c.idCliente = v.idCliente
     INNER JOIN usuarios u ON u.idUsuario = v.idUsuario
@@ -1873,7 +1872,7 @@ function estadoPagoDesdeMontos(monto, pago) {
 
 function ventaCompleta(idCompania, idVenta) {
   const venta = db.prepare(`
-    SELECT v.*, (v.monto - v.pago) AS saldo, c.nombreCompleto AS cliente, c.numeroTelefono, u.nombre AS usuario
+    SELECT v.*, (v.monto - v.pago) AS saldo, c.nombreCompleto AS cliente, c.numeroTelefono, c.nit, c.direccion AS direccionCliente, u.nombre AS usuario
     FROM ventas_contado v
     INNER JOIN clientes c ON c.idCliente = v.idCliente
     INNER JOIN usuarios u ON u.idUsuario = v.idUsuario
@@ -1949,7 +1948,11 @@ function generarTicketVenta(venta, idCompania, settings = getPrintSettings(idCom
   rows.push(`Venta: ${String(venta.idVenta).padStart(6, '0')}`);
   rows.push(`Fecha mov.: ${formatTicketDate(venta.fecha)}`);
   rows.push(`Fecha reg.: ${formatTicketDate(venta.fechaRegistro)}`);
-  rows.push(`Cliente: ${venta.cliente}`);
+  for (const clienteLine of wrapText(`Cliente: ${venta.cliente}`, width)) rows.push(clienteLine);
+  if (venta.nit) rows.push(`NIT: ${venta.nit}`);
+  if (venta.direccionCliente) {
+    for (const direccionLine of wrapText(`Direccion: ${venta.direccionCliente}`, width)) rows.push(direccionLine);
+  }
   rows.push(`Atendio: ${venta.usuario}`);
   rows.push(dash);
   rows.push(`${'PRODUCTO'.padEnd(productWidth)}${'CANT'.padStart(5)}${'TOTAL'.padStart(12)}`);

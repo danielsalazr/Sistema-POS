@@ -294,6 +294,8 @@
               <v-list density="compact">
                 <v-list-item title="Cliente" :subtitle="detalle.cliente" />
                 <v-list-item title="Telefono" :subtitle="detalle.numeroTelefono || 'Sin telefono'" />
+                <v-list-item title="NIT / documento" :subtitle="detalle.nit || 'Sin NIT'" />
+                <v-list-item title="Direccion" :subtitle="detalle.direccionCliente || 'Sin direccion'" />
               </v-list>
             </v-col>
             <v-col cols="12" md="6">
@@ -769,7 +771,9 @@ async function editarVenta(venta) {
     clienteSeleccionado.value = clientes.value.find((cliente) => cliente.idCliente === ventaCompleta.idCliente) || {
       idCliente: ventaCompleta.idCliente,
       nombreCompleto: ventaCompleta.cliente,
-      numeroTelefono: ventaCompleta.numeroTelefono
+      numeroTelefono: ventaCompleta.numeroTelefono,
+      nit: ventaCompleta.nit,
+      direccion: ventaCompleta.direccionCliente
     };
     carrito.value = ventaCompleta.productos.map((producto) => {
       const productoActual = productos.value.find((item) => item.idProducto === producto.idProducto);

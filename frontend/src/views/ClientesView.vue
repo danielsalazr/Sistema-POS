@@ -20,12 +20,16 @@
       </v-data-table>
     </v-card>
 
-    <v-dialog v-model="dialog" max-width="560">
+    <v-dialog v-model="dialog" max-width="720">
       <v-card>
         <v-card-title>{{ form.idCliente ? 'Editar cliente' : 'Nuevo cliente' }}</v-card-title>
         <v-card-text>
-          <v-text-field v-model="form.nombreCompleto" label="Nombre completo" />
-          <v-text-field v-model="form.numeroTelefono" label="Telefono" />
+          <div class="form-grid">
+            <v-text-field v-model="form.nombreCompleto" label="Nombre o razon social" />
+            <v-text-field v-model="form.numeroTelefono" label="Telefono" />
+            <v-text-field v-model="form.nit" label="NIT / documento" />
+            <v-text-field v-model="form.direccion" label="Direccion" />
+          </div>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -51,11 +55,13 @@ const form = reactive(empty());
 const headers = [
   { title: 'Nombre', key: 'nombreCompleto' },
   { title: 'Telefono', key: 'numeroTelefono' },
+  { title: 'NIT', key: 'nit' },
+  { title: 'Direccion', key: 'direccion' },
   { title: '', key: 'actions', sortable: false, align: 'end' }
 ];
 
 function empty() {
-  return { idCliente: null, nombreCompleto: '', numeroTelefono: '' };
+  return { idCliente: null, nombreCompleto: '', numeroTelefono: '', nit: '', direccion: '' };
 }
 
 async function load() {
@@ -96,3 +102,11 @@ async function eliminar(item) {
 
 onMounted(load);
 </script>
+
+<style scoped>
+.form-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+</style>
