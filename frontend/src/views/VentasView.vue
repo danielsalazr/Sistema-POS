@@ -750,7 +750,11 @@ async function verDetalle(venta) {
 async function imprimirVenta(idVenta, showSuccess = true) {
   imprimiendoTicket.value = true;
   try {
-    await api.post(`/ventas/contado/${idVenta}/imprimir`, {});
+    const resultado = await api.post(`/ventas/contado/${idVenta}/imprimir`, {});
+    if (resultado?.deshabilitada) {
+      if (showSuccess) notify('La impresion no esta disponible en este servidor.', 'info');
+      return;
+    }
     if (showSuccess) notify(`Ticket de venta ${idVenta} enviado a impresora`);
   } catch (err) {
     notify(`Venta guardada, pero no se pudo imprimir: ${err.message}`, 'error');

@@ -1,22 +1,45 @@
 import cors from 'cors';
 import { spawn } from 'node:child_process';
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { db } from './db.js';
+import Database from 'better-sqlite3';
+import { createToken, hashPassword, readToken, verifyPassword } from './auth.js';
+import { dataDir, db, getAuthSecret, pendingRestorePath } from './db.js';
 import { normalizeDateTimeInput, nowSql, numeric, requireFields } from './utils.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = process.env.PORT || 3020;
 const printerName = process.env.POS_PRINTER || 'EPSON_TM_T20II';
+const printEnabled = process.env.PRINT_ENABLED !== 'false';
+const restoreKey = process.env.RESTORE_KEY || '';
+const frontendDist = path.resolve(__dirname, '..', '..', 'frontend', 'dist');
 const DELETE_PASSWORD_SETTING = 'PRESTAMOS_APORTES_DELETE_PASSWORD_HASH';
+const authSecret = getAuthSecret();
+const PUBLIC_API_PATHS = new Set(['/salud', '/login']);
 
 app.disable('etag');
-app.use(cors());
+app.set('trust proxy', 1);
+if (process.env.CORS_ORIGIN) app.use(cors({ origin: process.env.CORS_ORIGIN.split(',') }));
+else if (process.env.NODE_ENV !== 'production') app.use(cors());
 app.use(express.json());
 app.use('/api', (_req, res, next) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
+  next();
+});
+
+app.use('/api', (req, res, next) => {
+  if (PUBLIC_API_PATHS.has(req.path)) return next();
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const data = readToken(token, authSecret);
+  const usuario = data && db.prepare('SELECT idUsuario, nombre FROM usuarios WHERE idUsuario = ?').get(data.sub);
+  if (!usuario) return res.status(401).json({ error: 'Sesion invalida o expirada. Ingresa de nuevo.' });
+  req.usuario = usuario;
   next();
 });
 
@@ -98,8 +121,11 @@ app.post('/api/companias', (req, res) => {
 
 app.post('/api/login', (req, res) => {
   requireFields(req.body, ['nombre', 'contrasena']);
-  const usuario = db.prepare('SELECT idUsuario, nombre FROM usuarios WHERE nombre = ? AND contrasena = ?').get(req.body.nombre, req.body.contrasena);
-  if (!usuario) return res.status(401).json({ error: 'Usuario o contrasena invalidos' });
+  const registro = db.prepare('SELECT idUsuario, nombre, contrasena FROM usuarios WHERE nombre = ?').get(req.body.nombre);
+  if (!registro || !verifyPassword(req.body.contrasena, registro.contrasena)) {
+    return res.status(401).json({ error: 'Usuario o contrasena invalidos' });
+  }
+  const usuario = { idUsuario: registro.idUsuario, nombre: registro.nombre };
   const permisos = db.prepare(`
     SELECT p.clave, p.descripcion
     FROM permisos p
@@ -107,7 +133,7 @@ app.post('/api/login', (req, res) => {
     WHERE pu.idUsuario = ?
     ORDER BY p.clave
   `).all(usuario.idUsuario);
-  res.json({ usuario, permisos });
+  res.json({ usuario, permisos, token: createToken(usuario.idUsuario, authSecret) });
 });
 
 app.get('/api/productos', (req, res) => {
@@ -527,7 +553,7 @@ app.post('/api/prestamos-aportes/:id/eliminar', (req, res) => {
 
   const storedPassword = getCompanySetting(idCompania, DELETE_PASSWORD_SETTING, '');
   if (!storedPassword) return res.status(400).json({ error: 'Configura primero la contraseña de eliminación en Empresa' });
-  if (!verifyPassword(contrasena, storedPassword)) return res.status(401).json({ error: 'Contraseña de eliminación incorrecta' });
+  if (!verifyPassword(contrasena, storedPassword)) return res.status(403).json({ error: 'Contraseña de eliminación incorrecta' });
 
   const movimiento = db.prepare('SELECT idMovimiento FROM prestamos_aportes WHERE idMovimiento = ? AND idCompania = ?').get(req.params.id, idCompania);
   if (!movimiento) return res.status(404).json({ error: 'Movimiento no encontrado' });
@@ -546,8 +572,21 @@ app.get('/api/usuarios', (req, res) => {
 
 app.post('/api/usuarios', (req, res) => {
   requireFields(req.body, ['nombre', 'contrasena']);
-  const result = db.prepare('INSERT INTO usuarios (nombre, contrasena) VALUES (?, ?)').run(req.body.nombre, req.body.contrasena);
+  const result = db.prepare('INSERT INTO usuarios (nombre, contrasena) VALUES (?, ?)').run(req.body.nombre, hashPassword(req.body.contrasena));
   res.status(201).json(db.prepare('SELECT idUsuario, nombre FROM usuarios WHERE idUsuario = ?').get(result.lastInsertRowid));
+});
+
+app.put('/api/usuarios/:id/contrasena', (req, res) => {
+  requireFields(req.body, ['contrasenaActual', 'contrasenaNueva']);
+  const actual = db.prepare('SELECT contrasena FROM usuarios WHERE idUsuario = ?').get(req.usuario.idUsuario);
+  if (!verifyPassword(req.body.contrasenaActual, actual?.contrasena)) {
+    return res.status(403).json({ error: 'Tu contrasena actual es incorrecta' });
+  }
+  const nueva = String(req.body.contrasenaNueva);
+  if (nueva.length < 8) return res.status(400).json({ error: 'La nueva contrasena debe tener al menos 8 caracteres' });
+  const result = db.prepare('UPDATE usuarios SET contrasena = ? WHERE idUsuario = ?').run(hashPassword(nueva), req.params.id);
+  if (!result.changes) return res.status(404).json({ error: 'Usuario no encontrado' });
+  res.json({ ok: true });
 });
 
 app.get('/api/permisos', (req, res) => {
@@ -1490,6 +1529,7 @@ app.post('/api/ventas/contado/:id/imprimir', async (req, res, next) => {
     const idCompania = companiaId(req);
     const venta = ventaCompleta(idCompania, req.params.id);
     if (!venta) return res.status(404).json({ error: 'Venta no encontrada' });
+    if (!printEnabled) return res.json({ ok: true, deshabilitada: true, impresiones: [] });
     const settings = getPrintSettings(idCompania);
     const impresiones = [];
 
@@ -1811,6 +1851,61 @@ app.post('/api/egresos', (req, res) => {
   res.status(201).json(db.prepare('SELECT * FROM egresos WHERE idEgreso = ?').get(result.lastInsertRowid));
 });
 
+app.get('/api/admin/backup', async (req, res, next) => {
+  const tmpPath = path.join(dataDir, `backup-${Date.now()}.sqlite`);
+  try {
+    await db.backup(tmpPath);
+    const stamp = nowSql().replace(/[: ]/g, '-');
+    res.download(tmpPath, `dela-pos-${stamp}.sqlite`, () => fs.rmSync(tmpPath, { force: true }));
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    next(err);
+  }
+});
+
+app.post('/api/admin/restaurar', express.raw({ type: 'application/octet-stream', limit: '200mb' }), (req, res) => {
+  if (!restoreKey) return res.status(403).json({ error: 'Restauracion deshabilitada: configura RESTORE_KEY' });
+  const key = String(req.headers['x-restore-key'] || '');
+  if (!verifyPassword(key, restoreKey)) {
+    return res.status(403).json({ error: 'Clave de restauracion invalida' });
+  }
+  if (!Buffer.isBuffer(req.body) || !req.body.subarray(0, 16).toString('latin1').startsWith('SQLite format 3')) {
+    return res.status(400).json({ error: 'El archivo no es una base SQLite valida' });
+  }
+
+  const tmpPath = path.join(dataDir, `restore-upload-${Date.now()}.sqlite`);
+  fs.writeFileSync(tmpPath, req.body);
+  let resumen;
+  try {
+    const candidate = new Database(tmpPath, { readonly: true });
+    try {
+      const integrity = candidate.pragma('integrity_check', { simple: true });
+      if (integrity !== 'ok') throw new Error(`integrity_check: ${integrity}`);
+      const tablas = ['usuarios', 'productos', 'ventas_contado', 'compras'];
+      resumen = Object.fromEntries(tablas.map((tabla) => [tabla, candidate.prepare(`SELECT COUNT(*) AS total FROM ${tabla}`).get().total]));
+    } finally {
+      candidate.close();
+    }
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    return res.status(400).json({ error: `Base invalida: ${err.message}` });
+  }
+
+  fs.renameSync(tmpPath, pendingRestorePath);
+  res.json({ ok: true, resumen, mensaje: 'Base recibida. El servidor se reinicia para aplicarla.' });
+  res.on('finish', () => {
+    db.close();
+    process.exit(0);
+  });
+});
+
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist, { index: false }));
+  app.get(/^(?!\/api(\/|$)).*/, (req, res) => {
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
+
 app.use((err, req, res, next) => {
   const status = err.status || 500;
   res.status(status).json({ error: err.message || 'Error interno', ...(err.payload || {}) });
@@ -1905,20 +2000,6 @@ function setCompanySetting(idCompania, clave, valor) {
 }
 
 
-function hashPassword(password) {
-  const salt = randomBytes(16).toString('hex');
-  const hash = scryptSync(password, salt, 32).toString('hex');
-  return `scrypt:${salt}:${hash}`;
-}
-
-function verifyPassword(password, storedPassword) {
-  if (!storedPassword || !password) return false;
-  const [algorithm, salt, storedHash] = String(storedPassword).split(':');
-  if (algorithm !== 'scrypt' || !salt || !storedHash) return password === storedPassword;
-  const expected = Buffer.from(storedHash, 'hex');
-  const actual = scryptSync(password, salt, expected.length);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
-}
 function getPrintSettings(idCompania) {
   return {
     width: Math.min(Math.max(numeric(getCompanySetting(idCompania, 'IMPRESION_WIDTH', '35'), 35), 28), 48),

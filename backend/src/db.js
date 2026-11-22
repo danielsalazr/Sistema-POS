@@ -1,14 +1,31 @@
 import Database from 'better-sqlite3';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hashPassword, isHashedPassword } from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.resolve(__dirname, '..', 'data');
-const dbPath = path.join(dataDir, 'sublime-pos.sqlite');
+export const dataDir = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(__dirname, '..', 'data');
+export const dbPath = path.join(dataDir, 'sublime-pos.sqlite');
+export const pendingRestorePath = path.join(dataDir, 'restore-pending.sqlite');
 const schemaPath = path.resolve(__dirname, '..', 'sql', 'schema.sql');
 
 fs.mkdirSync(dataDir, { recursive: true });
+applyPendingRestore();
+
+function applyPendingRestore() {
+  if (!fs.existsSync(pendingRestorePath)) return;
+  if (fs.existsSync(dbPath)) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.renameSync(dbPath, path.join(dataDir, `sublime-pos.before-restore-${stamp}.sqlite`));
+  }
+  for (const suffix of ['-wal', '-shm', '-journal']) fs.rmSync(`${dbPath}${suffix}`, { force: true });
+  fs.renameSync(pendingRestorePath, dbPath);
+  console.log('Base de datos restaurada desde restore-pending.sqlite');
+}
 
 export const db = new Database(dbPath);
 db.pragma('foreign_keys = ON');
@@ -156,7 +173,7 @@ if (idProductoCompra?.notnull) {
 const defaults = db.transaction(() => {
   db.prepare('INSERT OR IGNORE INTO clientes (idCliente, idCompania, nombreCompleto, numeroTelefono, nit, direccion) VALUES (1, 1, ?, ?, ?, ?)').run('Mostrador', '0000000000', '', '');
   db.prepare('INSERT INTO empresa (idCompania, nombre, direccion, telefono, mensajePersonal) SELECT 1, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM empresa WHERE idCompania = 1)').run('', '', '', '');
-  db.prepare('INSERT OR IGNORE INTO usuarios (idUsuario, nombre, contrasena) VALUES (1, ?, ?)').run('admin', 'admin');
+  db.prepare('INSERT OR IGNORE INTO usuarios (idUsuario, nombre, contrasena) VALUES (1, ?, ?)').run('admin', hashPassword(process.env.ADMIN_PASSWORD || 'admin'));
 
   const permisos = [
     ['RegistrarVentaContado', 'Hacer ventas al contado e imprimir tickets'],
@@ -207,3 +224,20 @@ const defaults = db.transaction(() => {
 });
 
 defaults();
+
+const hashLegacyPasswords = db.transaction(() => {
+  const update = db.prepare('UPDATE usuarios SET contrasena = ? WHERE idUsuario = ?');
+  for (const usuario of db.prepare('SELECT idUsuario, contrasena FROM usuarios').all()) {
+    if (!isHashedPassword(usuario.contrasena)) update.run(hashPassword(usuario.contrasena), usuario.idUsuario);
+  }
+});
+hashLegacyPasswords();
+
+export function getAuthSecret() {
+  if (process.env.AUTH_SECRET) return process.env.AUTH_SECRET;
+  const stored = db.prepare("SELECT valor FROM comun WHERE clave = 'AUTH_SECRET'").get()?.valor;
+  if (stored) return stored;
+  const generated = randomBytes(32).toString('hex');
+  db.prepare("INSERT INTO comun (clave, valor) VALUES ('AUTH_SECRET', ?)").run(generated);
+  return generated;
+}

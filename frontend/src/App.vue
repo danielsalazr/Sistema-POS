@@ -66,7 +66,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from './api.js';
 import { clearSession, session, setCompany } from './session.js';
@@ -137,8 +137,8 @@ async function createCompany() {
   }
 }
 
-onMounted(() => {
-  if (session.usuario) loadCompanies();
-});
+watch(() => session.token, (token) => {
+  if (token) loadCompanies().catch(() => {});
+}, { immediate: true });
 </script>
 

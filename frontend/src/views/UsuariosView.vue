@@ -11,6 +11,7 @@
     <v-card class="data-card" variant="flat" border>
       <v-data-table :headers="headers" :items="usuarios" :loading="loading" item-value="idUsuario">
         <template #item.actions="{ item }">
+          <v-btn icon="mdi-lock-reset" size="small" variant="text" title="Cambiar contrasena" @click="abrirContrasena(item)" />
           <v-btn icon="mdi-shield-account" size="small" variant="text" @click="abrirPermisos(item)" />
         </template>
       </v-data-table>
@@ -30,6 +31,25 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <v-dialog v-model="contrasenaDialog" max-width="520">
+      <v-card>
+        <v-card-title>Cambiar contrasena de {{ usuarioSeleccionado?.nombre }}</v-card-title>
+        <v-card-text>
+          <v-alert v-if="contrasenaError" class="mb-4" type="error" density="compact">{{ contrasenaError }}</v-alert>
+          <v-text-field v-model="contrasenaForm.contrasenaActual" label="Tu contrasena actual" type="password" autocomplete="current-password" />
+          <v-text-field v-model="contrasenaForm.contrasenaNueva" label="Nueva contrasena (minimo 8 caracteres)" type="password" autocomplete="new-password" />
+          <v-text-field v-model="contrasenaForm.confirmacion" label="Confirmar nueva contrasena" type="password" autocomplete="new-password" />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="contrasenaDialog = false">Cancelar</v-btn>
+          <v-btn color="primary" :loading="savingContrasena" @click="guardarContrasena">Guardar</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <v-snackbar v-model="snackbar" color="success" timeout="3000">{{ snackbarText }}</v-snackbar>
 
     <v-dialog v-model="permisosDialog" max-width="760">
       <v-card>
@@ -65,6 +85,12 @@ const savingPermisos = ref(false);
 const dialog = ref(false);
 const permisosDialog = ref(false);
 const form = reactive({ nombre: '', contrasena: '' });
+const contrasenaDialog = ref(false);
+const savingContrasena = ref(false);
+const contrasenaError = ref('');
+const contrasenaForm = reactive({ contrasenaActual: '', contrasenaNueva: '', confirmacion: '' });
+const snackbar = ref(false);
+const snackbarText = ref('');
 
 const headers = [
   { title: 'ID', key: 'idUsuario' },
@@ -93,6 +119,37 @@ async function guardar() {
     await load();
   } finally {
     saving.value = false;
+  }
+}
+
+function abrirContrasena(usuario) {
+  usuarioSeleccionado.value = usuario;
+  contrasenaForm.contrasenaActual = '';
+  contrasenaForm.contrasenaNueva = '';
+  contrasenaForm.confirmacion = '';
+  contrasenaError.value = '';
+  contrasenaDialog.value = true;
+}
+
+async function guardarContrasena() {
+  contrasenaError.value = '';
+  if (contrasenaForm.contrasenaNueva !== contrasenaForm.confirmacion) {
+    contrasenaError.value = 'La confirmacion no coincide';
+    return;
+  }
+  savingContrasena.value = true;
+  try {
+    await api.put(`/usuarios/${usuarioSeleccionado.value.idUsuario}/contrasena`, {
+      contrasenaActual: contrasenaForm.contrasenaActual,
+      contrasenaNueva: contrasenaForm.contrasenaNueva
+    });
+    contrasenaDialog.value = false;
+    snackbarText.value = 'Contrasena actualizada';
+    snackbar.value = true;
+  } catch (err) {
+    contrasenaError.value = err.message;
+  } finally {
+    savingContrasena.value = false;
   }
 }
 

@@ -5,8 +5,12 @@
         <div class="page-title">Empresa</div>
         <div class="page-subtitle">Datos impresos en tickets y comprobantes.</div>
       </div>
-      <v-btn color="primary" prepend-icon="mdi-content-save" :loading="saving" @click="guardar">Guardar</v-btn>
+      <div class="d-flex ga-2">
+        <v-btn variant="tonal" prepend-icon="mdi-database-arrow-down" :loading="descargandoBackup" @click="descargarBackup">Descargar backup</v-btn>
+        <v-btn color="primary" prepend-icon="mdi-content-save" :loading="saving" @click="guardar">Guardar</v-btn>
+      </div>
     </div>
+    <v-alert v-if="backupError" class="mb-4" type="error" density="compact">{{ backupError }}</v-alert>
 
     <v-card class="data-card" variant="flat" border>
       <v-card-title>Datos del negocio</v-card-title>
@@ -72,9 +76,23 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
-import { api } from '../api.js';
+import { api, downloadFile } from '../api.js';
 
 const saving = ref(false);
+const descargandoBackup = ref(false);
+const backupError = ref('');
+
+async function descargarBackup() {
+  descargandoBackup.value = true;
+  backupError.value = '';
+  try {
+    await downloadFile('/admin/backup');
+  } catch (err) {
+    backupError.value = `No se pudo descargar el backup: ${err.message}`;
+  } finally {
+    descargandoBackup.value = false;
+  }
+}
 const empresa = reactive({ nombre: '', direccion: '', telefono: '', mensajePersonal: '' });
 const impresion = reactive({ width: 35, imprimirTicketCliente: true, imprimirComandaCocina: false });
 const seguridad = reactive({ contrasenaEliminacion: '', contrasenaEliminacionConfigurada: false });

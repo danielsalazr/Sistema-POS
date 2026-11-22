@@ -2,7 +2,7 @@
   <div class="login-page">
     <v-card class="login-card" elevation="8">
       <v-card-title class="text-h5">Dela POS</v-card-title>
-      <v-card-subtitle>Ingreso al sistema reconstruido</v-card-subtitle>
+      <v-card-subtitle>Ingreso al sistema</v-card-subtitle>
       <v-card-text>
         <v-alert v-if="error" class="mb-4" type="error" density="compact">{{ error }}</v-alert>
         <v-form @submit.prevent="login">
@@ -17,14 +17,15 @@
 
 <script setup>
 import { reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { api } from '../api.js';
 import { setSession } from '../session.js';
 
 const router = useRouter();
+const route = useRoute();
 const loading = ref(false);
 const error = ref('');
-const form = reactive({ nombre: 'admin', contrasena: 'admin' });
+const form = reactive({ nombre: '', contrasena: '' });
 
 async function login() {
   loading.value = true;
@@ -32,7 +33,8 @@ async function login() {
   try {
     const payload = await api.post('/login', form);
     setSession(payload);
-    router.push('/');
+    const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/';
+    router.push(redirect);
   } catch (err) {
     error.value = err.message;
   } finally {

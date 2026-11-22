@@ -1,36 +1,49 @@
 import { reactive } from 'vue';
 
-const stored = JSON.parse(localStorage.getItem('dela-pos-session') || localStorage.getItem('sublime-session') || 'null');
+const STORAGE_KEY = 'dela-pos-session';
+
+function readStored() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+const stored = readStored();
+localStorage.removeItem('sublime-session');
 
 export const session = reactive({
-  usuario: stored?.usuario || null,
-  permisos: stored?.permisos || [],
+  token: stored?.token || null,
+  usuario: stored?.token ? stored.usuario || null : null,
+  permisos: stored?.token ? stored.permisos || [] : [],
   compania: stored?.compania || { idCompania: 1, nombre: 'Dela Crepes' }
 });
 
-export function setSession(payload) {
-  session.usuario = payload.usuario;
-  session.permisos = payload.permisos || [];
-  localStorage.setItem('dela-pos-session', JSON.stringify({
+function persist() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    token: session.token,
     usuario: session.usuario,
     permisos: session.permisos,
     compania: session.compania
   }));
-  localStorage.removeItem('sublime-session');
+}
+
+export function setSession(payload) {
+  session.token = payload.token;
+  session.usuario = payload.usuario;
+  session.permisos = payload.permisos || [];
+  persist();
 }
 
 export function clearSession() {
+  session.token = null;
   session.usuario = null;
   session.permisos = [];
-  localStorage.removeItem('dela-pos-session');
-  localStorage.removeItem('sublime-session');
+  persist();
 }
 
 export function setCompany(compania) {
   session.compania = compania;
-  localStorage.setItem('dela-pos-session', JSON.stringify({
-    usuario: session.usuario,
-    permisos: session.permisos,
-    compania: session.compania
-  }));
+  persist();
 }

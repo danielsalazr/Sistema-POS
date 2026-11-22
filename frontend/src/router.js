@@ -20,7 +20,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
-    { path: '/pantalla-pedidos', name: 'pantalla-pedidos', component: PantallaPedidosView, meta: { public: true, kiosk: true } },
+    { path: '/pantalla-pedidos', name: 'pantalla-pedidos', component: PantallaPedidosView, meta: { kiosk: true } },
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/productos', name: 'productos', component: ProductosView },
     { path: '/ventas', name: 'ventas', component: VentasView },
@@ -38,8 +38,8 @@ const router = createRouter({
 });
 
 router.beforeEach((to) => {
-  if (!to.meta.public && !session.usuario) return { name: 'login' };
-  if (to.name === 'login' && session.usuario) return { name: 'dashboard' };
+  if (!to.meta.public && !session.token) return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } };
+  if (to.name === 'login' && session.token) return { name: 'dashboard' };
   return true;
 });
 
