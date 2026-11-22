@@ -1,7 +1,7 @@
 # Despliegue en Railway (SQLite + volumen)
 
 Un solo servicio Node sirve la API (`/api`) y el frontend compilado (`frontend/dist`).
-La base SQLite vive en un volumen persistente. La configuracion de build y arranque esta en `railway.json`.
+La base SQLite vive en un volumen persistente. La configuracion de build, arranque, healthcheck y volumen esta en `.railway/railway.ts`. Para desplegar cambios nuevos sigue `deploy/GUIA-DESPLIEGUE.md`.
 
 ## 1. Crear el servicio
 

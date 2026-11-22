@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-"Dela POS": a point-of-sale system for a small restaurant (initial company "Dela Crepes"), historically deployed on a Raspberry Pi behind Nginx/Apache (`deploy/README.md`), now targeting Railway as a single service with SQLite on a volume (`deploy/RAILWAY.md`, `railway.json`). Node + Express + better-sqlite3 backend, Vue 3 + Vuetify 3 frontend (plain JS, no TypeScript). Code, identifiers, UI text and commit messages are in Spanish.
+"Dela POS": a point-of-sale system for a small restaurant (initial company "Dela Crepes"), historically deployed on a Raspberry Pi behind Nginx/Apache (`deploy/README.md`), now deployed on Railway as a single service with SQLite on the volume `delapos-volume` mounted at `/data`. Infra is defined in `.railway/railway.ts` (applied only via `railway config plan/apply`, never by deploys). Deploy workflow and data-safety rules: `deploy/GUIA-DESPLIEGUE.md`. Never remove/rename/shrink the volume in `railway.ts`, change `DATA_DIR`, or raise replicas above 1. Node + Express + better-sqlite3 backend, Vue 3 + Vuetify 3 frontend (plain JS, no TypeScript). Code, identifiers, UI text and commit messages are in Spanish.
 
 ## Commands
 
@@ -35,7 +35,7 @@ Backend env vars: `DATA_DIR` (folder holding `sublime-pos.sqlite`, default `back
 - Writes that touch several tables (sales, purchases, payments, voids) are wrapped in `db.transaction(...)`. Errors are thrown with `error.status` and turned into `{ error }` JSON by the final error middleware.
 - List endpoints take `?limite=N` (or `limite=todos`) via `queryLimit`.
 - **Auth** (`auth.js`): login returns an HMAC-signed token (`payload.signature`, 7-day default TTL). A middleware on `/api` requires `Authorization: Bearer <token>` for everything except `/api/salud` and `/api/login`, and sets `req.usuario`. Passwords are scrypt hashes (`scrypt:salt:hash`); `db.js` hashes any plaintext password at startup. Only use HTTP 401 for invalid sessions: the frontend logs out on any 401, so wrong secondary passwords (delete password, current password) return 403.
-- **Backup/restore**: `GET /api/admin/backup` streams a `db.backup()` copy. `POST /api/admin/restaurar` (token + `x-restore-key`) validates an uploaded SQLite file, writes `restore-pending.sqlite` and exits; on next boot `db.js` swaps it in, keeping the old file as `sublime-pos.before-restore-*.sqlite`. Client: `backend/scripts/subir-bd.js`. Relies on Railway `restartPolicyType: ALWAYS`.
+- **Backup/restore**: `GET /api/admin/backup` streams a `db.backup()` copy. `POST /api/admin/restaurar` (token + `x-restore-key`) validates an uploaded SQLite file, writes `restore-pending.sqlite` and exits; on next boot `db.js` swaps it in, keeping the old file as `sublime-pos.before-restore-*.sqlite`. Client: `backend/scripts/subir-bd.js`. Exits with code 1 so Railway restarts it under any restart policy.
 
 ### Dates (important)
 All datetimes are stored as local strings `YYYY-MM-DD HH:MM:SS` in `America/Bogota`, never UTC/ISO. Use `localDateTimeSql`/`nowSql`/`normalizeDateTimeInput` from `backend/src/utils.js` and the helpers in `frontend/src/dates.js`. Sales and purchases have two dates: `fecha` (when the transaction actually happened, entered as a date only and stored as `YYYY-MM-DD 00:00:00`) and `fechaRegistro` (when it was entered into the system). Reports filter by `date(fecha)`.
