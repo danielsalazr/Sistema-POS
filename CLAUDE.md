@@ -6,6 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 "Dela POS": a point-of-sale system for a small restaurant (initial company "Dela Crepes"), historically deployed on a Raspberry Pi behind Nginx/Apache (`deploy/README.md`), now deployed on Railway as a single service with SQLite on the volume `delapos-volume` mounted at `/data`. Infra is defined in `.railway/railway.ts` (applied only via `railway config plan/apply`, never by deploys). Deploy workflow and data-safety rules: `deploy/GUIA-DESPLIEGUE.md`. Never remove/rename/shrink the volume in `railway.ts`, change `DATA_DIR`, or raise replicas above 1. Node + Express + better-sqlite3 backend, Vue 3 + Vuetify 3 frontend (plain JS, no TypeScript). Code, identifiers, UI text and commit messages are in Spanish.
 
+## Spec-driven development (SDD), required for new requirements
+
+Every new feature, behavior change or schema change follows `sdd/README.md`: **spec → design → plan → implementation**, one document per phase in `sdd/features/NNN-slug/`. Do not advance a phase, and do not write application code before the plan is approved, without the user's explicit approval (`estado: aprobado` in the doc's front matter; only set it when the user says so). Small fixes (typos, obvious one-line bugs) are exempt; if unsure, ask.
+
+- Read first: `sdd/constitucion.md` (project principles: data safety, touch-first/responsive, multi-company, Bogotá dates, caja consistency) and `sdd/data-model.md` (current schema; keep it updated when the schema changes).
+- Scaffolding: `npm run sdd:nueva -- "nombre"`, `npm run sdd:fase -- NNN design|plan|implementation` (refuses if the previous phase is not approved), `npm run sdd:estado` (regenerates `sdd/features/README.md`).
+- Slash commands: `/sdd-nueva`, `/sdd-spec`, `/sdd-design`, `/sdd-plan`, `/sdd-implementar`, `/sdd-estado` (`.claude/commands/`).
+
 ## Commands
 
 From the repo root:
@@ -20,7 +28,7 @@ npm run dev:frontend
 - Frontend build: `npm run build --prefix frontend` (outputs `frontend/dist`).
 - Production (Railway): root `npm run build` (installs both + builds frontend) then `npm start`. When `frontend/dist` exists, Express serves it with an SPA fallback, so one process serves UI and API.
 - Run the backend against a throwaway DB: `DATA_DIR=/some/dir PORT=3999 node backend/src/server.js`.
-- There are no tests, linter or formatter configured.
+- There are no tests, linter or formatter configured; verification is manual against a copy of production data (see `deploy/GUIA-DESPLIEGUE.md`).
 
 **Ports:** `server.js` defaults to `PORT=3020` and the Vite dev proxy forwards `/api` to `VITE_API_TARGET` or `http://localhost:3020`. The README and deploy configs say 3001; production runs with `PORT=3001` explicitly. Keep the two in sync if you change either.
 
