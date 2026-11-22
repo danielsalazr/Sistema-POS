@@ -1895,7 +1895,7 @@ app.post('/api/admin/restaurar', express.raw({ type: 'application/octet-stream',
   res.json({ ok: true, resumen, mensaje: 'Base recibida. El servidor se reinicia para aplicarla.' });
   res.on('finish', () => {
     db.close();
-    process.exit(0);
+    process.exit(1); // codigo != 0 para que Railway reinicie aun con politica ON_FAILURE
   });
 });
 
