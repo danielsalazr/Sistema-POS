@@ -99,6 +99,231 @@ function validarCodigoProductoDisponible(idCompania, codigoBarras, idProductoExc
   throw error;
 }
 
+function httpError(status, message, payload) {
+  const error = new Error(message);
+  error.status = status;
+  if (payload) error.payload = payload;
+  return error;
+}
+
+function esErrorUnico(err) {
+  return err?.code === 'SQLITE_CONSTRAINT_UNIQUE' || /UNIQUE constraint failed/.test(err?.message || '');
+}
+
+// CRUD de catalogos simples por compania: { id, idCompania, nombre, <campoActivo>, fechaRegistro }.
+// usos: [{ campo, sql }] donde sql cuenta referencias usando el parametro @id.
+// camposExtra: { campo: (valor, idCompania, registroActual) => valorNormalizado } para columnas adicionales editables.
+function registrarCatalogo({ ruta, tabla, id, campoActivo, etiqueta, usos = [], camposExtra = {} }) {
+  const columnasUso = usos.map((uso) => `(${uso.sql.replaceAll('@id', `t.${id}`)}) AS ${uso.campo}`).join(', ');
+  const selectBase = `SELECT t.*${columnasUso ? `, ${columnasUso}` : ''} FROM ${tabla} t`;
+  const obtener = (idCompania, idRegistro) => db.prepare(`${selectBase} WHERE t.idCompania = ? AND t.${id} = ?`).get(idCompania, idRegistro);
+  const nombreValido = (valor) => {
+    const nombre = String(valor ?? '').trim();
+    if (!nombre) throw httpError(400, 'El nombre es obligatorio');
+    return nombre;
+  };
+  const duplicado = (nombre) => httpError(409, `Ya existe ${etiqueta} con el nombre "${nombre}"`, { code: 'NOMBRE_DUPLICADO' });
+
+  app.get(ruta, (req, res) => {
+    const filtroActivo = req.query.incluirInactivas === '1' ? '' : `AND t.${campoActivo} = 1`;
+    res.json(db.prepare(`${selectBase} WHERE t.idCompania = ? ${filtroActivo} ORDER BY t.nombre COLLATE NOCASE`).all(companiaId(req)));
+  });
+
+  app.post(ruta, (req, res) => {
+    const idCompania = companiaId(req);
+    const nombre = nombreValido(req.body.nombre);
+    const extras = Object.entries(camposExtra)
+      .filter(([campo]) => req.body[campo] !== undefined)
+      .map(([campo, normalizar]) => [campo, normalizar(req.body[campo], idCompania, null)]);
+    try {
+      const columnas = ['idCompania', 'nombre', campoActivo, 'fechaRegistro', ...extras.map(([campo]) => campo)];
+      const result = db.prepare(`INSERT INTO ${tabla} (${columnas.join(', ')}) VALUES (${columnas.map(() => '?').join(', ')})`)
+        .run(idCompania, nombre, 1, nowSql(), ...extras.map(([, valor]) => valor));
+      res.status(201).json(obtener(idCompania, result.lastInsertRowid));
+    } catch (err) {
+      if (esErrorUnico(err)) throw duplicado(nombre);
+      throw err;
+    }
+  });
+
+  app.put(`${ruta}/:id`, (req, res) => {
+    const idCompania = companiaId(req);
+    const actual = obtener(idCompania, req.params.id);
+    if (!actual) throw httpError(404, `No se encontro ${etiqueta}`);
+    const cambios = {};
+    if (req.body.nombre !== undefined) cambios.nombre = nombreValido(req.body.nombre);
+    if (req.body[campoActivo] !== undefined) cambios[campoActivo] = req.body[campoActivo] === true || Number(req.body[campoActivo]) === 1 ? 1 : 0;
+    for (const [campo, normalizar] of Object.entries(camposExtra)) {
+      if (req.body[campo] !== undefined) cambios[campo] = normalizar(req.body[campo], idCompania, actual);
+    }
+    const campos = Object.keys(cambios);
+    if (campos.length) {
+      try {
+        db.prepare(`UPDATE ${tabla} SET ${campos.map((campo) => `${campo} = ?`).join(', ')} WHERE idCompania = ? AND ${id} = ?`)
+          .run(...campos.map((campo) => cambios[campo]), idCompania, req.params.id);
+      } catch (err) {
+        if (esErrorUnico(err)) throw duplicado(cambios.nombre);
+        throw err;
+      }
+    }
+    res.json(obtener(idCompania, req.params.id));
+  });
+
+  app.delete(`${ruta}/:id`, (req, res) => {
+    const idCompania = companiaId(req);
+    const actual = obtener(idCompania, req.params.id);
+    if (!actual) throw httpError(404, `No se encontro ${etiqueta}`);
+    const enUso = usos.filter((uso) => Number(actual[uso.campo]) > 0);
+    if (enUso.length) {
+      throw httpError(409, `No se puede eliminar ${etiqueta} porque esta en uso. Puedes desactivarla.`, {
+        code: 'EN_USO',
+        ...Object.fromEntries(usos.map((uso) => [uso.campo, Number(actual[uso.campo])]))
+      });
+    }
+    db.prepare(`DELETE FROM ${tabla} WHERE idCompania = ? AND ${id} = ?`).run(idCompania, req.params.id);
+    res.status(204).end();
+  });
+}
+
+registrarCatalogo({
+  ruta: '/api/lineas-producto',
+  tabla: 'lineas_producto',
+  id: 'idLineaProducto',
+  campoActivo: 'activa',
+  etiqueta: 'una linea de producto',
+  usos: [
+    { campo: 'cantidadProductos', sql: 'SELECT COUNT(*) FROM productos p WHERE p.idLineaProducto = @id' },
+    { campo: 'cantidadVentas', sql: 'SELECT COUNT(DISTINCT pv.idVenta) FROM productos_vendidos pv WHERE pv.idLineaProducto = @id' }
+  ]
+});
+
+// Valida la linea a asignar: null = sin linea. Una linea inactiva solo se acepta si ya era la actual.
+function validarLineaProducto(idCompania, valor, idLineaActual = null) {
+  if (valor === null || valor === undefined || valor === '' || Number(valor) === 0) return null;
+  const linea = db.prepare('SELECT idLineaProducto, activa FROM lineas_producto WHERE idCompania = ? AND idLineaProducto = ?').get(idCompania, numeric(valor, -1));
+  if (!linea) throw httpError(400, 'La linea de producto no existe en esta compania');
+  if (!linea.activa && linea.idLineaProducto !== idLineaActual) throw httpError(400, 'La linea de producto esta inactiva');
+  return linea.idLineaProducto;
+}
+
+// Asigna la linea a los productos y clasifica sus renglones vendidos que aun no tienen linea (design 002 D-02).
+function asignarLineaAProductos(idCompania, idLineaProducto, idProductos) {
+  const ids = [...new Set(idProductos.map((valor) => numeric(valor, 0)).filter((valor) => valor > 0))];
+  if (!ids.length) return { actualizados: 0, ventasClasificadas: 0 };
+  const marcadores = ids.map(() => '?').join(',');
+  const actualizados = db.prepare(`UPDATE productos SET idLineaProducto = ? WHERE idCompania = ? AND idProducto IN (${marcadores})`)
+    .run(idLineaProducto, idCompania, ...ids).changes;
+  let ventasClasificadas = 0;
+  if (idLineaProducto !== null) {
+    ventasClasificadas = db.prepare(`
+      UPDATE productos_vendidos
+      SET idLineaProducto = ?
+      WHERE idLineaProducto IS NULL
+        AND idProducto IN (SELECT idProducto FROM productos WHERE idCompania = ? AND idProducto IN (${marcadores}))
+        AND idVenta IN (SELECT idVenta FROM ventas_contado WHERE idCompania = ?)
+    `).run(idLineaProducto, idCompania, ...ids, idCompania).changes;
+  }
+  return { actualizados, ventasClasificadas };
+}
+
+app.post('/api/lineas-producto/asignar', (req, res) => {
+  const idCompania = companiaId(req);
+  if (!Array.isArray(req.body.idProductos) || req.body.idProductos.length === 0) {
+    throw httpError(400, 'Selecciona al menos un producto');
+  }
+  const idLinea = validarLineaProducto(idCompania, req.body.idLineaProducto);
+  const resultado = db.transaction(() => asignarLineaAProductos(idCompania, idLinea, req.body.idProductos))();
+  res.json(resultado);
+});
+
+// Filtro comun de reportes de ventas: compania, rango por date(v.fecha) y usuario opcional.
+function filtroVentasReporte(req) {
+  const where = ['v.idCompania = ?'];
+  const params = [companiaId(req)];
+  if (req.query.desde) {
+    where.push('date(v.fecha) >= date(?)');
+    params.push(req.query.desde);
+  }
+  if (req.query.hasta) {
+    where.push('date(v.fecha) <= date(?)');
+    params.push(req.query.hasta);
+  }
+  if (req.query.idUsuario) {
+    where.push('v.idUsuario = ?');
+    params.push(numeric(req.query.idUsuario));
+  }
+  return { whereSql: `WHERE ${where.join(' AND ')}`, params };
+}
+
+function redondear(valor, decimales = 2) {
+  const factor = 10 ** decimales;
+  return Math.round(Number(valor || 0) * factor) / factor;
+}
+
+app.get('/api/reportes/ventas-por-linea', (req, res) => {
+  const { whereSql, params } = filtroVentasReporte(req);
+  const filas = db.prepare(`
+    SELECT pv.idLineaProducto,
+           l.nombre AS nombreLinea,
+           pv.idProducto,
+           pv.descripcion,
+           SUM(pv.cantidadVendida) AS unidades,
+           SUM(pv.precioVenta * pv.cantidadVendida) AS valor,
+           COUNT(DISTINCT v.idVenta) AS numeroVentas
+    FROM productos_vendidos pv
+    INNER JOIN ventas_contado v ON v.idVenta = pv.idVenta
+    LEFT JOIN lineas_producto l ON l.idLineaProducto = pv.idLineaProducto
+    ${whereSql}
+    GROUP BY pv.idLineaProducto, pv.idProducto, pv.descripcion
+    ORDER BY valor DESC
+  `).all(...params);
+  const ventasPorLinea = db.prepare(`
+    SELECT pv.idLineaProducto, COUNT(DISTINCT v.idVenta) AS numeroVentas
+    FROM productos_vendidos pv
+    INNER JOIN ventas_contado v ON v.idVenta = pv.idVenta
+    ${whereSql}
+    GROUP BY pv.idLineaProducto
+  `).all(...params);
+  const totales = db.prepare(`
+    SELECT COUNT(DISTINCT v.idVenta) AS numeroVentas, COALESCE(SUM(pv.cantidadVendida), 0) AS unidades
+    FROM productos_vendidos pv
+    INNER JOIN ventas_contado v ON v.idVenta = pv.idVenta
+    ${whereSql}
+  `).get(...params);
+
+  const lineas = new Map();
+  for (const fila of filas) {
+    const clave = fila.idLineaProducto ?? 'sin-linea';
+    if (!lineas.has(clave)) {
+      lineas.set(clave, {
+        idLineaProducto: fila.idLineaProducto ?? null,
+        nombre: fila.idLineaProducto == null ? 'Sin línea' : fila.nombreLinea,
+        unidades: 0,
+        valor: 0,
+        numeroVentas: ventasPorLinea.find((item) => (item.idLineaProducto ?? null) === (fila.idLineaProducto ?? null))?.numeroVentas || 0,
+        porcentaje: 0,
+        productos: []
+      });
+    }
+    const linea = lineas.get(clave);
+    linea.unidades += fila.unidades;
+    linea.valor += fila.valor;
+    linea.productos.push({
+      idProducto: fila.idProducto,
+      descripcion: fila.descripcion,
+      unidades: fila.unidades,
+      valor: fila.valor,
+      numeroVentas: fila.numeroVentas
+    });
+  }
+  const totalVendido = [...lineas.values()].reduce((suma, linea) => suma + linea.valor, 0);
+  const resultado = [...lineas.values()]
+    .map((linea) => ({ ...linea, valor: redondear(linea.valor), porcentaje: totalVendido ? redondear((linea.valor / totalVendido) * 100) : 0 }))
+    .sort((a, b) => (a.idLineaProducto === null) - (b.idLineaProducto === null) || b.valor - a.valor);
+
+  res.json({ totalVendido: redondear(totalVendido), unidades: totales.unidades, numeroVentas: totales.numeroVentas, lineas: resultado });
+});
+
 app.get('/api/companias', (req, res) => {
   res.json(db.prepare('SELECT * FROM companias WHERE activa = 1 ORDER BY nombre').all());
 });
@@ -139,9 +364,11 @@ app.post('/api/login', (req, res) => {
 app.get('/api/productos', (req, res) => {
   const q = `%${req.query.q || ''}%`;
   const productos = db.prepare(`
-    SELECT * FROM productos
-    WHERE idCompania = ? AND (descripcion LIKE ? OR codigoBarras LIKE ?)
-    ORDER BY descripcion
+    SELECT p.*, l.nombre AS lineaProducto, l.activa AS lineaActiva
+    FROM productos p
+    LEFT JOIN lineas_producto l ON l.idLineaProducto = p.idLineaProducto
+    WHERE p.idCompania = ? AND (p.descripcion LIKE ? OR p.codigoBarras LIKE ?)
+    ORDER BY p.descripcion
   `).all(companiaId(req), q, q);
   res.json(productos);
 });
@@ -163,9 +390,10 @@ app.get('/api/productos/codigo/:codigo', (req, res) => {
 app.post('/api/productos', (req, res) => {
   requireFields(req.body, ['descripcion', 'precioCompra', 'precioVenta', 'existencia', 'stock']);
   const codigoBarras = validarCodigoProductoDisponible(companiaId(req), req.body.codigoBarras);
+  const idLinea = validarLineaProducto(companiaId(req), req.body.idLineaProducto);
   const result = db.prepare(`
-    INSERT INTO productos (idCompania, codigoBarras, descripcion, precioCompra, precioVenta, existencia, stock)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO productos (idCompania, codigoBarras, descripcion, precioCompra, precioVenta, existencia, stock, idLineaProducto)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     companiaId(req),
     codigoBarras,
@@ -173,7 +401,8 @@ app.post('/api/productos', (req, res) => {
     numeric(req.body.precioCompra),
     numeric(req.body.precioVenta),
     numeric(req.body.existencia),
-    numeric(req.body.stock)
+    numeric(req.body.stock),
+    idLinea
   );
   res.status(201).json(db.prepare('SELECT * FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), result.lastInsertRowid));
 });
@@ -181,20 +410,29 @@ app.post('/api/productos', (req, res) => {
 app.put('/api/productos/:id', (req, res) => {
   requireFields(req.body, ['descripcion', 'precioCompra', 'precioVenta', 'existencia', 'stock']);
   const codigoBarras = validarCodigoProductoDisponible(companiaId(req), req.body.codigoBarras, numeric(req.params.id));
-  db.prepare(`
-    UPDATE productos
-    SET codigoBarras = ?, descripcion = ?, precioCompra = ?, precioVenta = ?, existencia = ?, stock = ?
-    WHERE idCompania = ? AND idProducto = ?
-  `).run(
-    codigoBarras,
-    req.body.descripcion,
-    numeric(req.body.precioCompra),
-    numeric(req.body.precioVenta),
-    numeric(req.body.existencia),
-    numeric(req.body.stock),
-    companiaId(req),
-    req.params.id
-  );
+  const productoActual = db.prepare('SELECT idLineaProducto FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), req.params.id);
+  if (!productoActual) throw httpError(404, 'Producto no encontrado');
+  const cambiaLinea = req.body.idLineaProducto !== undefined;
+  const idLinea = cambiaLinea ? validarLineaProducto(companiaId(req), req.body.idLineaProducto, productoActual.idLineaProducto) : null;
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE productos
+      SET codigoBarras = ?, descripcion = ?, precioCompra = ?, precioVenta = ?, existencia = ?, stock = ?
+      WHERE idCompania = ? AND idProducto = ?
+    `).run(
+      codigoBarras,
+      req.body.descripcion,
+      numeric(req.body.precioCompra),
+      numeric(req.body.precioVenta),
+      numeric(req.body.existencia),
+      numeric(req.body.stock),
+      companiaId(req),
+      req.params.id
+    );
+    if (cambiaLinea && idLinea !== productoActual.idLineaProducto) {
+      asignarLineaAProductos(companiaId(req), idLinea, [req.params.id]);
+    }
+  })();
   res.json(db.prepare('SELECT * FROM productos WHERE idCompania = ? AND idProducto = ?').get(companiaId(req), req.params.id));
 });
 
@@ -1596,8 +1834,8 @@ app.post('/api/ventas/contado', (req, res) => {
     const insertarProducto = db.prepare(`
       INSERT INTO productos_vendidos (
         idProducto, codigoBarras, idVenta, descripcion, precioCompra,
-        precioVenta, precioVentaOriginal, cantidadVendida, nota
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        precioVenta, precioVentaOriginal, cantidadVendida, nota, idLineaProducto
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const actualizarExistencia = db.prepare('UPDATE productos SET existencia = existencia - ? WHERE idProducto = ?');
     const insertarPago = db.prepare('INSERT INTO pagos_ventas (idVenta, idMedioPago, monto, referencia) VALUES (?, ?, ?, ?)');
@@ -1612,7 +1850,8 @@ app.post('/api/ventas/contado', (req, res) => {
         producto.precioVenta,
         producto.precioVenta,
         producto.cantidadVendida,
-        producto.nota
+        producto.nota,
+        producto.idLineaProducto ?? null
       );
       actualizarExistencia.run(producto.cantidadVendida, producto.idProducto);
     }
@@ -1651,7 +1890,9 @@ app.put('/api/ventas/contado/:id', (req, res) => {
       throw error;
     }
 
-    const productosAnteriores = db.prepare('SELECT idProducto, cantidadVendida FROM productos_vendidos WHERE idVenta = ?').all(req.params.id);
+    const productosAnteriores = db.prepare('SELECT idProducto, cantidadVendida, idLineaProducto FROM productos_vendidos WHERE idVenta = ?').all(req.params.id);
+    // design 002 D-03: los productos que ya estaban en la venta conservan la linea con que se vendieron.
+    const lineaAnteriorPorProducto = new Map(productosAnteriores.map((producto) => [producto.idProducto, producto.idLineaProducto]));
     const devolverExistencia = db.prepare('UPDATE productos SET existencia = existencia + ? WHERE idProducto = ?');
     for (const producto of productosAnteriores) {
       devolverExistencia.run(producto.cantidadVendida, producto.idProducto);
@@ -1722,8 +1963,8 @@ app.put('/api/ventas/contado/:id', (req, res) => {
     const insertarProducto = db.prepare(`
       INSERT INTO productos_vendidos (
         idProducto, codigoBarras, idVenta, descripcion, precioCompra,
-        precioVenta, precioVentaOriginal, cantidadVendida, nota
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        precioVenta, precioVentaOriginal, cantidadVendida, nota, idLineaProducto
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const actualizarExistencia = db.prepare('UPDATE productos SET existencia = existencia - ? WHERE idProducto = ?');
     for (const producto of productosVenta) {
@@ -1736,7 +1977,8 @@ app.put('/api/ventas/contado/:id', (req, res) => {
         producto.precioVenta,
         producto.precioVenta,
         producto.cantidadVendida,
-        producto.nota
+        producto.nota,
+        lineaAnteriorPorProducto.get(producto.idProducto) ?? producto.idLineaProducto ?? null
       );
       actualizarExistencia.run(producto.cantidadVendida, producto.idProducto);
     }

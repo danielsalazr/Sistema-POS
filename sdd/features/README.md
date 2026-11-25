@@ -14,5 +14,7 @@ Leyenda: ✅ aprobado · 📝 en trabajo · · no iniciado. Para pausar o descar
 <!-- indice:inicio -->
 | Feature | Nombre | Estado | spec design plan impl |
 |---|---|---|---|
-| [001-toma-de-pedido-guiada](./001-toma-de-pedido-guiada/) | Toma de pedido guiada | spec (borrador) | 📝 · · · |
+| [001-toma-de-pedido-guiada](./001-toma-de-pedido-guiada/) | Toma de pedido guiada | pausado | 📝 · · · |
+| [002-lineas-de-producto](./002-lineas-de-producto/) | Líneas de producto y ventas por línea | terminado | ✅ ✅ ✅ ✅ |
+| [003-centros-de-costo-en-compras](./003-centros-de-costo-en-compras/) | Centros de costo en compras | plan (aprobado) | ✅ ✅ ✅ · |
 <!-- indice:fin -->

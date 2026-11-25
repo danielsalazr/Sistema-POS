@@ -4,7 +4,7 @@ Fuente de verdad del esquema **vigente** en producción (SQLite, `/data/sublime-
 
 > **Mantenimiento**: toda feature que cambie el esquema actualiza este archivo en su fase de implementación: tablas, columnas, diagrama y la sección **Historial de cambios**.
 
-Última revisión: 2026-11-22, contra la base de producción (23 tablas).
+Última revisión: 2026-11-24 (feature 002), 24 tablas.
 
 ## Convenciones
 
@@ -30,6 +30,9 @@ erDiagram
     companias ||--o{ compras : idCompania
     companias ||--o{ medios_pago : idCompania
     companias ||--|| empresa : idCompania
+    companias ||--o{ lineas_producto : idCompania
+    lineas_producto |o--o{ productos : "idLineaProducto (actual)"
+    lineas_producto |o--o{ productos_vendidos : "idLineaProducto (snapshot)"
 
     usuarios ||--o{ permisos_usuarios : idUsuario
     permisos ||--o{ permisos_usuarios : idPermiso
@@ -110,8 +113,21 @@ Claves conocidas: `IMPRESION_WIDTH_n`, `IMPRESION_TICKET_CLIENTE_n`, `IMPRESION_
 | existencia | REAL NN | Inventario actual: la venta descuenta, la anulación y la compra suman |
 | stock | REAL NN | Nivel de referencia de inventario mínimo |
 | idCompania | INTEGER =1 | |
+| idLineaProducto | INTEGER FK → `lineas_producto`, nullable | Línea **actual** del producto; NULL = "Sin línea" (feature 002) |
 
-No hay categorías, variantes, ingredientes ni modificadores. Ver **Brechas conocidas**.
+No hay categorías de menú, variantes, ingredientes ni modificadores. Ver **Brechas conocidas**.
+
+**`lineas_producto`** (feature 002): agrupación comercial de productos para analizar las ventas por parte del negocio.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| idLineaProducto | INTEGER PK | |
+| idCompania | INTEGER NN | |
+| nombre | TEXT NN | UNIQUE `(idCompania, nombre COLLATE NOCASE)` |
+| activa | INTEGER NN =1 | Inactiva: no aparece en los selectores, sí en los reportes |
+| fechaRegistro | TEXT | |
+
+No se puede eliminar si tiene productos o renglones vendidos (409); solo se desactiva. No hay líneas sembradas: las crea el usuario.
 
 **`clientes`**: `idCliente` PK (1 = "Mostrador", semilla), `nombreCompleto` NN, `numeroTelefono` NN, `nit` ='', `direccion` ='', `idCompania`.
 
@@ -147,6 +163,7 @@ No hay categorías, variantes, ingredientes ni modificadores. Ver **Brechas cono
 | precioCompra, precioVenta, precioVentaOriginal | REAL NN | `precioVenta` puede diferir del original (precio editado en la venta) |
 | cantidadVendida | REAL NN | |
 | nota | TEXT ='' | Texto libre por línea; hoy es el único lugar para personalizar el pedido |
+| idLineaProducto | INTEGER FK → `lineas_producto`, nullable | **Snapshot** de la línea del producto al vender. Al editar la venta se conserva. NULL = sin clasificar: se completa la primera vez que el producto recibe línea (design 002 D-02) |
 
 **`pagos_ventas`**: `idPagoVenta` PK, `idVenta` NN FK, `idMedioPago` NN FK, `monto` NN, `referencia`. Una venta tiene 0..n pagos.
 
@@ -191,6 +208,7 @@ Cualquier tabla nueva que mueva dinero debe integrarse en ambos endpoints.
 
 ## Brechas conocidas
 
+- **Renglones vendidos sin producto**: 49 renglones de ventas importadas de mayo de 2026 tienen `idProducto = 0` y descripciones libres (938.000 COP). No se clasifican al asignar líneas a productos. `backend/scripts/clasificar-renglones-sin-producto.js` los clasifica por palabras clave; los mixtos quedan en "Sin línea" (feature 002).
 - **Toma de pedidos personalizada**: no existen categorías, ingredientes, toppings, salsas, adiciones ni modificadores con precio. Hoy la personalización es texto libre en `productos_vendidos.nota`, y las adiciones con precio se venden como productos aparte.
 - `productos.codigoBarras` tiene UNIQUE global, no por compañía.
 - `productos_vendidos` no tiene PK ni FK a `productos`, así que no se puede referenciar una línea de venta individual (por ejemplo, para colgarle modificadores) sin agregar una PK.
@@ -201,3 +219,4 @@ Cualquier tabla nueva que mueva dinero debe integrarse en ambos endpoints.
 | Fecha | Feature | Cambio |
 |---|---|---|
 | 2026-11-22 | — | Documento inicial a partir de la base de producción. |
+| 2026-11-24 | 002-lineas-de-producto | Nueva tabla `lineas_producto`; columnas `productos.idLineaProducto` y `productos_vendidos.idLineaProducto` (snapshot); índices `ix_productos_linea`, `ix_productos_vendidos_linea`. |

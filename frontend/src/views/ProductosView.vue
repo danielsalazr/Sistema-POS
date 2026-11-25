@@ -11,9 +11,17 @@
     <v-card class="data-card" variant="flat" border>
       <v-card-text>
         <v-text-field v-model="q" label="Buscar" prepend-inner-icon="mdi-magnify" hide-details @input="load" />
+        <v-chip-group v-if="lineas.length" v-model="filtroLinea" class="mt-2" color="primary" selected-class="text-primary" column>
+          <v-chip value="todas" filter variant="outlined">Todas</v-chip>
+          <v-chip v-for="linea in lineas" :key="linea.idLineaProducto" :value="linea.idLineaProducto" filter variant="outlined">{{ linea.nombre }}</v-chip>
+          <v-chip value="sin-linea" filter variant="outlined">Sin línea</v-chip>
+        </v-chip-group>
       </v-card-text>
-      <v-data-table :headers="headers" :items="productos" :loading="loading" item-value="idProducto">
+      <v-data-table :headers="headers" :items="productosFiltrados" :loading="loading" item-value="idProducto">
         <template #item.precioVenta="{ item }">{{ currency(item.precioVenta) }}</template>
+        <template #item.lineaProducto="{ item }">
+          <span :class="{ 'text-medium-emphasis': !item.lineaProducto }">{{ item.lineaProducto || 'Sin línea' }}</span>
+        </template>
         <template #item.actions="{ item }">
           <v-btn icon="mdi-pencil" size="small" variant="text" @click="editar(item)" />
           <v-btn icon="mdi-delete" size="small" variant="text" color="error" @click="eliminar(item)" />
@@ -21,13 +29,24 @@
       </v-data-table>
     </v-card>
 
-    <v-dialog v-model="dialog" max-width="720">
+    <v-dialog v-model="dialog" max-width="720" :fullscreen="$vuetify.display.xs">
       <v-card>
         <v-card-title>{{ form.idProducto ? 'Editar producto' : 'Nuevo producto' }}</v-card-title>
         <v-card-text>
+          <v-alert v-if="errorForm" class="mb-3" type="error" density="compact">{{ errorForm }}</v-alert>
           <div class="form-grid">
             <v-text-field v-model="form.codigoBarras" label="Codigo o ID del producto" hint="Sugerido automaticamente, editable" persistent-hint />
             <v-text-field v-model="form.descripcion" label="Descripcion" />
+            <v-select
+              v-model="form.idLineaProducto"
+              :items="opcionesLinea"
+              item-title="nombre"
+              item-value="idLineaProducto"
+              label="Línea de producto"
+              prepend-inner-icon="mdi-shape-outline"
+              :hint="lineas.length ? '' : 'Crea las líneas en Clasificación'"
+              persistent-hint
+            />
             <v-text-field v-model.number="form.precioCompra" label="Precio compra" type="number" />
             <v-text-field v-model.number="form.precioVenta" label="Precio venta" type="number" />
             <v-text-field v-model.number="form.existencia" label="Existencia" type="number" />
@@ -60,7 +79,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '../api.js';
 
 const loading = ref(false);
@@ -70,11 +89,30 @@ const codigoDuplicadoDialog = ref(false);
 const q = ref('');
 const codigoDuplicado = ref('');
 const productos = ref([]);
+const lineasTodas = ref([]);
+const filtroLinea = ref('todas');
+const errorForm = ref('');
 const form = reactive(empty());
+
+const lineas = computed(() => lineasTodas.value.filter((linea) => linea.activa));
+const opcionesLinea = computed(() => {
+  const actual = lineasTodas.value.find((linea) => linea.idLineaProducto === form.idLineaProducto && !linea.activa);
+  return [
+    { idLineaProducto: null, nombre: 'Sin línea' },
+    ...lineas.value,
+    ...(actual ? [{ ...actual, nombre: `${actual.nombre} (inactiva)` }] : [])
+  ];
+});
+const productosFiltrados = computed(() => {
+  if (filtroLinea.value === 'todas' || filtroLinea.value === undefined) return productos.value;
+  if (filtroLinea.value === 'sin-linea') return productos.value.filter((producto) => !producto.idLineaProducto);
+  return productos.value.filter((producto) => producto.idLineaProducto === filtroLinea.value);
+});
 
 const headers = [
   { title: 'Codigo', key: 'codigoBarras' },
   { title: 'Descripcion', key: 'descripcion' },
+  { title: 'Línea', key: 'lineaProducto' },
   { title: 'Precio venta', key: 'precioVenta' },
   { title: 'Existencia', key: 'existencia' },
   { title: 'Stock', key: 'stock' },
@@ -82,7 +120,7 @@ const headers = [
 ];
 
 function empty() {
-  return { idProducto: null, codigoBarras: '', descripcion: '', precioCompra: 0, precioVenta: 0, existencia: 0, stock: 0 };
+  return { idProducto: null, codigoBarras: '', descripcion: '', precioCompra: 0, precioVenta: 0, existencia: 0, stock: 0, idLineaProducto: null };
 }
 
 function currency(value) {
@@ -98,6 +136,14 @@ async function load() {
   }
 }
 
+async function cargarLineas() {
+  try {
+    lineasTodas.value = await api.get('/lineas-producto?incluirInactivas=1');
+  } catch {
+    lineasTodas.value = [];
+  }
+}
+
 async function sugerirCodigoProducto() {
   const payload = await api.get('/productos/siguiente-codigo');
   return payload.codigoBarras || '';
@@ -105,6 +151,7 @@ async function sugerirCodigoProducto() {
 
 async function nuevo() {
   Object.assign(form, empty());
+  errorForm.value = '';
   try {
     form.codigoBarras = await sugerirCodigoProducto();
   } catch (_err) {
@@ -114,12 +161,14 @@ async function nuevo() {
 }
 
 function editar(item) {
-  Object.assign(form, item);
+  Object.assign(form, empty(), item);
+  errorForm.value = '';
   dialog.value = true;
 }
 
 async function guardar() {
   saving.value = true;
+  errorForm.value = '';
   try {
     if (form.idProducto) await api.put(`/productos/${form.idProducto}`, form);
     else await api.post('/productos', form);
@@ -131,7 +180,7 @@ async function guardar() {
       codigoDuplicadoDialog.value = true;
       return;
     }
-    throw err;
+    errorForm.value = err.message;
   } finally {
     saving.value = false;
   }
@@ -142,5 +191,5 @@ async function eliminar(item) {
   await load();
 }
 
-onMounted(load);
+onMounted(() => Promise.all([load(), cargarLineas()]));
 </script>

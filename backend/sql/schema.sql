@@ -1,3 +1,13 @@
+CREATE TABLE IF NOT EXISTS lineas_producto (
+  idLineaProducto INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  idCompania INTEGER NOT NULL,
+  nombre TEXT NOT NULL,
+  activa INTEGER NOT NULL DEFAULT 1,
+  fechaRegistro TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_lineas_producto_nombre ON lineas_producto (idCompania, nombre COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS productos (
   idProducto INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
   idCompania INTEGER,
@@ -6,7 +16,8 @@ CREATE TABLE IF NOT EXISTS productos (
   precioCompra REAL NOT NULL,
   precioVenta REAL NOT NULL,
   existencia REAL NOT NULL,
-  stock REAL NOT NULL
+  stock REAL NOT NULL,
+  idLineaProducto INTEGER REFERENCES lineas_producto (idLineaProducto)
 );
 
 CREATE TABLE IF NOT EXISTS companias (
@@ -130,6 +141,7 @@ CREATE TABLE IF NOT EXISTS productos_vendidos (
   precioVentaOriginal REAL NOT NULL,
   cantidadVendida REAL NOT NULL,
   nota TEXT,
+  idLineaProducto INTEGER REFERENCES lineas_producto (idLineaProducto),
   FOREIGN KEY (idVenta) REFERENCES ventas_contado (idVenta) ON DELETE CASCADE ON UPDATE CASCADE
 );
 

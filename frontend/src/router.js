@@ -15,6 +15,7 @@ import ProveedoresView from './views/ProveedoresView.vue';
 import ComprasView from './views/ComprasView.vue';
 import PrestamosAportesView from './views/PrestamosAportesView.vue';
 import PantallaPedidosView from './views/PantallaPedidosView.vue';
+import ClasificacionView from './views/ClasificacionView.vue';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -23,6 +24,7 @@ const router = createRouter({
     { path: '/pantalla-pedidos', name: 'pantalla-pedidos', component: PantallaPedidosView, meta: { kiosk: true } },
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/productos', name: 'productos', component: ProductosView },
+    { path: '/clasificacion', name: 'clasificacion', component: ClasificacionView },
     { path: '/ventas', name: 'ventas', component: VentasView },
     { path: '/compras', name: 'compras', component: ComprasView },
     { path: '/clientes', name: 'clientes', component: ClientesView },

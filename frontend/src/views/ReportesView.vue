@@ -3,9 +3,16 @@
     <div class="page-header">
       <div>
         <div class="page-title">Reportes</div>
-        <div class="page-subtitle">Ventas al contado por fecha, usuario e items vendidos.</div>
+        <div class="page-subtitle">Ventas por fecha, usuario, ítems y líneas de producto.</div>
       </div>
-      <v-btn color="primary" prepend-icon="mdi-refresh" :loading="loading" @click="load">Consultar</v-btn>
+      <v-btn color="primary" size="large" prepend-icon="mdi-refresh" :loading="loading" @click="consultar">Consultar</v-btn>
+    </div>
+
+    <div class="tipo-reporte mb-4">
+      <v-btn-toggle v-model="tipoReporte" color="primary" variant="outlined" divided mandatory @update:model-value="consultar">
+        <v-btn value="ventas" prepend-icon="mdi-receipt-text-outline">Ventas</v-btn>
+        <v-btn value="lineas" prepend-icon="mdi-shape-outline">Ventas por línea</v-btn>
+      </v-btn-toggle>
     </div>
 
     <v-card class="data-card mb-4" variant="flat" border>
@@ -27,7 +34,20 @@
               clearable
             />
           </v-col>
-          <v-col cols="12" md="4">
+          <v-col v-if="tipoReporte === 'ventas' && lineas.length" cols="12" md="3">
+            <v-select
+              v-model="lineaAtajo"
+              :items="lineas"
+              item-title="nombre"
+              item-value="idLineaProducto"
+              label="Productos de la línea…"
+              hint="Selecciona los productos que hoy pertenecen a la línea"
+              persistent-hint
+              clearable
+              @update:model-value="aplicarAtajoLinea"
+            />
+          </v-col>
+          <v-col v-if="tipoReporte === 'ventas'" cols="12" md="4">
             <v-autocomplete
               v-model="filtros.idProductos"
               :items="productos"
@@ -40,13 +60,16 @@
               clearable
             />
           </v-col>
-          <v-col cols="12" md="2" class="d-flex align-center">
+          <v-col v-if="tipoReporte === 'ventas'" cols="12" md="2" class="d-flex align-center">
             <v-btn block variant="tonal" prepend-icon="mdi-filter-remove" @click="limpiar">Limpiar</v-btn>
           </v-col>
         </v-row>
       </v-card-text>
     </v-card>
 
+    <ReporteVentasPorLinea v-if="tipoReporte === 'lineas'" ref="reporteLineas" :filtros="filtros" />
+
+    <template v-if="tipoReporte === 'ventas'">
     <v-row class="mb-4">
       <v-col cols="12" md="4">
         <v-card class="data-card" variant="flat" border>
@@ -190,12 +213,14 @@
         <template #item.pago="{ item }">{{ currency(item.pago) }}</template>
       </v-data-table>
     </v-card>
+    </template>
   </section>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { nextTick, onMounted, reactive, ref } from 'vue';
 import { api } from '../api.js';
+import ReporteVentasPorLinea from '../components/reportes/ReporteVentasPorLinea.vue';
 import { formatLocalDateTime } from '../dates.js';
 
 const loading = ref(false);
@@ -208,6 +233,10 @@ const mostrarResumenItems = ref(false);
 const detalleItemDialog = ref(false);
 const itemSeleccionado = ref(null);
 const filtros = reactive({ desde: today(), hasta: today(), idUsuario: null, idProductos: [] });
+const tipoReporte = ref('ventas');
+const reporteLineas = ref(null);
+const lineas = ref([]);
+const lineaAtajo = ref(null);
 
 const headers = [
   { title: 'Folio', key: 'idVenta' },
@@ -390,21 +419,39 @@ async function load() {
   }
 }
 
+async function consultar() {
+  if (tipoReporte.value === 'lineas') {
+    await nextTick();
+    await reporteLineas.value?.cargar();
+    return;
+  }
+  await load();
+}
+
+// design 002 D-06: atajo que llena el filtro de ítems con los productos que HOY pertenecen a la línea.
+function aplicarAtajoLinea(idLinea) {
+  if (!idLinea) return;
+  filtros.idProductos = productos.value.filter((producto) => producto.idLineaProducto === idLinea).map((producto) => producto.idProducto);
+}
+
 function limpiar() {
   filtros.desde = '';
   filtros.hasta = '';
   filtros.idUsuario = null;
   filtros.idProductos = [];
+  lineaAtajo.value = null;
   load();
 }
 
 onMounted(async () => {
-  const [usuariosPayload, productosPayload] = await Promise.all([
+  const [usuariosPayload, productosPayload, lineasPayload] = await Promise.all([
     api.get('/usuarios'),
-    api.get('/productos')
+    api.get('/productos'),
+    api.get('/lineas-producto').catch(() => [])
   ]);
   usuarios.value = usuariosPayload;
   productos.value = productosPayload;
+  lineas.value = lineasPayload;
   await load();
 });
 </script>
@@ -419,6 +466,10 @@ onMounted(async () => {
   font-size: 1.55rem;
   font-weight: 760;
   margin-top: 8px;
+}
+
+.tipo-reporte {
+  overflow-x: auto;
 }
 
 .table-title {

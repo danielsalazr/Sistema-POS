@@ -170,6 +170,16 @@ if (idProductoCompra?.notnull) {
   db.exec('DROP TABLE productos_comprados_old');
 }
 
+// Feature 002: linea de producto actual (productos) y snapshot de la linea al vender (productos_vendidos).
+for (const table of ['productos', 'productos_vendidos']) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name);
+  if (!columns.includes('idLineaProducto')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN idLineaProducto INTEGER REFERENCES lineas_producto (idLineaProducto)`);
+  }
+}
+db.exec('CREATE INDEX IF NOT EXISTS ix_productos_linea ON productos (idLineaProducto)');
+db.exec('CREATE INDEX IF NOT EXISTS ix_productos_vendidos_linea ON productos_vendidos (idLineaProducto)');
+
 const defaults = db.transaction(() => {
   db.prepare('INSERT OR IGNORE INTO clientes (idCliente, idCompania, nombreCompleto, numeroTelefono, nit, direccion) VALUES (1, 1, ?, ?, ?, ?)').run('Mostrador', '0000000000', '', '');
   db.prepare('INSERT INTO empresa (idCompania, nombre, direccion, telefono, mensajePersonal) SELECT 1, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM empresa WHERE idCompania = 1)').run('', '', '', '');

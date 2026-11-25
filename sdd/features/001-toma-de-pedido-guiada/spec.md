@@ -4,6 +4,7 @@ fase: spec
 estado: borrador        # borrador | en-revision | aprobado
 creado: 2026-11-22
 aprobado:               # fecha en que el usuario aprobó
+feature_estado: pausado # en standby desde 2026-11-24: se priorizan lineas de producto y centros de costo
 ---
 
 # Spec: Toma de pedido guiada

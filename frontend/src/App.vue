@@ -83,6 +83,7 @@ const savingCompany = ref(false);
 const items = [
   { title: 'Inicio', icon: 'mdi-view-dashboard', to: '/' },
   { title: 'Productos', icon: 'mdi-package-variant', to: '/productos' },
+  { title: 'Clasificación', icon: 'mdi-shape-outline', to: '/clasificacion' },
   { title: 'Ventas', icon: 'mdi-cart', to: '/ventas' },
   { title: 'Pantalla pedidos', icon: 'mdi-monitor-dashboard', to: '/pantalla-pedidos', external: true },
   { title: 'Compras', icon: 'mdi-truck-delivery', to: '/compras' },
