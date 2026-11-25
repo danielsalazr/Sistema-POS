@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <div class="page-title">Reportes</div>
-        <div class="page-subtitle">Ventas por fecha, usuario, ítems y líneas de producto.</div>
+        <div class="page-subtitle">Ventas, líneas de producto, compras por centro de costo y resultado por centro.</div>
       </div>
       <v-btn color="primary" size="large" prepend-icon="mdi-refresh" :loading="loading" @click="consultar">Consultar</v-btn>
     </div>
@@ -12,6 +12,8 @@
       <v-btn-toggle v-model="tipoReporte" color="primary" variant="outlined" divided mandatory @update:model-value="consultar">
         <v-btn value="ventas" prepend-icon="mdi-receipt-text-outline">Ventas</v-btn>
         <v-btn value="lineas" prepend-icon="mdi-shape-outline">Ventas por línea</v-btn>
+        <v-btn value="compras-centro" prepend-icon="mdi-sitemap-outline">Compras por centro</v-btn>
+        <v-btn value="resultado-centro" prepend-icon="mdi-scale-balance">Resultado por centro</v-btn>
       </v-btn-toggle>
     </div>
 
@@ -24,7 +26,7 @@
           <v-col cols="12" md="3">
             <v-text-field v-model="filtros.hasta" label="Hasta" type="date" />
           </v-col>
-          <v-col cols="12" md="3">
+          <v-col v-if="usaUsuario" cols="12" md="3">
             <v-select
               v-model="filtros.idUsuario"
               :items="usuarios"
@@ -68,6 +70,8 @@
     </v-card>
 
     <ReporteVentasPorLinea v-if="tipoReporte === 'lineas'" ref="reporteLineas" :filtros="filtros" />
+    <ReporteComprasPorCentro v-if="tipoReporte === 'compras-centro'" ref="reporteComprasCentro" :filtros="filtros" />
+    <ReporteResultadoPorCentro v-if="tipoReporte === 'resultado-centro'" ref="reporteResultadoCentro" :filtros="filtros" />
 
     <template v-if="tipoReporte === 'ventas'">
     <v-row class="mb-4">
@@ -218,8 +222,10 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { api } from '../api.js';
+import ReporteComprasPorCentro from '../components/reportes/ReporteComprasPorCentro.vue';
+import ReporteResultadoPorCentro from '../components/reportes/ReporteResultadoPorCentro.vue';
 import ReporteVentasPorLinea from '../components/reportes/ReporteVentasPorLinea.vue';
 import { formatLocalDateTime } from '../dates.js';
 
@@ -235,6 +241,9 @@ const itemSeleccionado = ref(null);
 const filtros = reactive({ desde: today(), hasta: today(), idUsuario: null, idProductos: [] });
 const tipoReporte = ref('ventas');
 const reporteLineas = ref(null);
+const reporteComprasCentro = ref(null);
+const reporteResultadoCentro = ref(null);
+const usaUsuario = computed(() => ['ventas', 'lineas'].includes(tipoReporte.value));
 const lineas = ref([]);
 const lineaAtajo = ref(null);
 
@@ -420,9 +429,11 @@ async function load() {
 }
 
 async function consultar() {
-  if (tipoReporte.value === 'lineas') {
+  const componentes = { lineas: reporteLineas, 'compras-centro': reporteComprasCentro, 'resultado-centro': reporteResultadoCentro };
+  const componente = componentes[tipoReporte.value];
+  if (componente) {
     await nextTick();
-    await reporteLineas.value?.cargar();
+    await componente.value?.cargar();
     return;
   }
   await load();

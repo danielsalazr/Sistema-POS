@@ -1,9 +1,30 @@
+CREATE TABLE IF NOT EXISTS centros_costo (
+  idCentroCosto INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  idCompania INTEGER NOT NULL,
+  nombre TEXT NOT NULL,
+  activo INTEGER NOT NULL DEFAULT 1,
+  fechaRegistro TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_centros_costo_nombre ON centros_costo (idCompania, nombre COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS tipos_gasto (
+  idTipoGasto INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  idCompania INTEGER NOT NULL,
+  nombre TEXT NOT NULL,
+  activo INTEGER NOT NULL DEFAULT 1,
+  fechaRegistro TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tipos_gasto_nombre ON tipos_gasto (idCompania, nombre COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS lineas_producto (
   idLineaProducto INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
   idCompania INTEGER NOT NULL,
   nombre TEXT NOT NULL,
   activa INTEGER NOT NULL DEFAULT 1,
-  fechaRegistro TEXT
+  fechaRegistro TEXT,
+  idCentroCosto INTEGER REFERENCES centros_costo (idCentroCosto)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_lineas_producto_nombre ON lineas_producto (idCompania, nombre COLLATE NOCASE);
@@ -158,6 +179,7 @@ CREATE TABLE IF NOT EXISTS compras (
 );
 
 CREATE TABLE IF NOT EXISTS productos_comprados (
+  idProductoComprado INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
   idProducto INTEGER,
   idCompra INTEGER NOT NULL,
   codigoBarras TEXT,
@@ -165,8 +187,12 @@ CREATE TABLE IF NOT EXISTS productos_comprados (
   precioCompra REAL NOT NULL,
   precioVenta REAL NOT NULL,
   cantidadComprada REAL NOT NULL,
+  idCentroCosto INTEGER,
+  idTipoGasto INTEGER,
   FOREIGN KEY (idCompra) REFERENCES compras (idCompra) ON DELETE CASCADE ON UPDATE CASCADE,
-  FOREIGN KEY (idProducto) REFERENCES productos (idProducto) ON DELETE RESTRICT ON UPDATE CASCADE
+  FOREIGN KEY (idProducto) REFERENCES productos (idProducto) ON DELETE RESTRICT ON UPDATE CASCADE,
+  FOREIGN KEY (idCentroCosto) REFERENCES centros_costo (idCentroCosto) ON DELETE RESTRICT,
+  FOREIGN KEY (idTipoGasto) REFERENCES tipos_gasto (idTipoGasto) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS apartados (

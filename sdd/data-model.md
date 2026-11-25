@@ -4,7 +4,7 @@ Fuente de verdad del esquema **vigente** en producción (SQLite, `/data/sublime-
 
 > **Mantenimiento**: toda feature que cambie el esquema actualiza este archivo en su fase de implementación: tablas, columnas, diagrama y la sección **Historial de cambios**.
 
-Última revisión: 2026-11-24 (feature 002), 24 tablas.
+Última revisión: 2026-11-24 (feature 003), 26 tablas.
 
 ## Convenciones
 
@@ -33,6 +33,11 @@ erDiagram
     companias ||--o{ lineas_producto : idCompania
     lineas_producto |o--o{ productos : "idLineaProducto (actual)"
     lineas_producto |o--o{ productos_vendidos : "idLineaProducto (snapshot)"
+    companias ||--o{ centros_costo : idCompania
+    companias ||--o{ tipos_gasto : idCompania
+    centros_costo |o--o{ lineas_producto : idCentroCosto
+    centros_costo |o--o{ productos_comprados : idCentroCosto
+    tipos_gasto |o--o{ productos_comprados : idTipoGasto
 
     usuarios ||--o{ permisos_usuarios : idUsuario
     permisos ||--o{ permisos_usuarios : idPermiso
@@ -127,6 +132,8 @@ No hay categorías de menú, variantes, ingredientes ni modificadores. Ver **Bre
 | activa | INTEGER NN =1 | Inactiva: no aparece en los selectores, sí en los reportes |
 | fechaRegistro | TEXT | |
 
+| idCentroCosto | INTEGER FK → `centros_costo`, nullable | Centro al que se suman las ventas de la línea en el resultado por centro (feature 003). No es snapshot. |
+
 No se puede eliminar si tiene productos o renglones vendidos (409); solo se desactiva. No hay líneas sembradas: las crea el usuario.
 
 **`clientes`**: `idCliente` PK (1 = "Mostrador", semilla), `nombreCompleto` NN, `numeroTelefono` NN, `nit` ='', `direccion` ='', `idCompania`.
@@ -171,7 +178,21 @@ No se puede eliminar si tiene productos o renglones vendidos (409); solo se desa
 
 **`compras`**: `idCompra` PK, `monto` NN, `pago` NN =0, `fecha` NN, `fechaRegistro`, `idProveedor` NN FK, `idUsuario` NN FK, `idCompania`.
 
-**`productos_comprados`**: líneas (snapshot), sin PK. `idProducto` **nullable** (`NULL` = gasto o insumo libre que no afecta inventario), `idCompra` NN FK, `codigoBarras`, `descripcion` NN, `precioCompra` NN, `precioVenta` NN, `cantidadComprada` NN.
+**`productos_comprados`**: ítems de la compra (snapshot). Reconstruida en la feature 003 para darle PK; `idProductoComprado` es igual al `rowid` anterior.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| idProductoComprado | INTEGER PK AUTOINCREMENT | Permite clasificar o corregir un ítem concreto |
+| idProducto | INTEGER FK, nullable | `NULL` = gasto o insumo de texto libre que no afecta inventario (hoy todos los ítems lo son) |
+| idCompra | INTEGER NN FK | |
+| codigoBarras, descripcion | TEXT | `descripcion` NN |
+| precioCompra, precioVenta, cantidadComprada | REAL NN | Subtotal = `precioCompra × cantidadComprada`; la suma es igual a `compras.monto` |
+| idCentroCosto | INTEGER FK → `centros_costo`, nullable | **Obligatorio en la API** al crear o editar (400 `ITEMS_SIN_CENTRO`). NULL = histórico "Sin asignar" |
+| idTipoGasto | INTEGER FK → `tipos_gasto`, nullable | Opcional. NULL = "Sin tipo" |
+
+**`centros_costo`** (feature 003): unidad del negocio a la que se carga un gasto. `idCentroCosto` PK, `idCompania` NN, `nombre` NN (UNIQUE por compañía sin distinguir mayúsculas), `activo` NN =1, `fechaRegistro`. No se puede eliminar si tiene ítems o líneas (409). Sin siembra.
+
+**`tipos_gasto`** (feature 003): naturaleza del gasto (insumo, inversión, mano de obra…). Misma forma que `centros_costo` (`idTipoGasto`, `activo`). No se puede eliminar si tiene ítems (409). Sin siembra.
 
 ### Dinero fuera de ventas y compras
 
@@ -204,7 +225,9 @@ No se puede eliminar si tiene productos o renglones vendidos (409); solo se desa
 - Entradas: `pagos_ventas`, `ingresos`, `prestamos_aportes` de tipo `APORTE_AL_NEGOCIO`, `PRESTAMO_AL_NEGOCIO` y `DEVOLUCION_RECIBIDA`, y sus subsanaciones.
 - Salidas: los pagos de `compras`, `egresos`, y los demás tipos de `prestamos_aportes`.
 
-Cualquier tabla nueva que mueva dinero debe integrarse en ambos endpoints.
+Cualquier tabla nueva que mueva dinero debe integrarse en ambos endpoints. La clasificación por centro y tipo (feature 003) **no** afecta la caja: es una dimensión de análisis sobre `productos_comprados`.
+
+Reportes de análisis (no de caja): `GET /api/reportes/ventas-por-linea`, `GET /api/reportes/compras-por-centro` y `GET /api/reportes/resultado-por-centro` (ventas por snapshot de línea → centro actual de la línea; compras por centro; "Gastos sin línea asociada", "Ventas sin centro" y "Compras sin asignar" como partidas de conciliación).
 
 ## Brechas conocidas
 
@@ -220,3 +243,4 @@ Cualquier tabla nueva que mueva dinero debe integrarse en ambos endpoints.
 |---|---|---|
 | 2026-11-22 | — | Documento inicial a partir de la base de producción. |
 | 2026-11-24 | 002-lineas-de-producto | Nueva tabla `lineas_producto`; columnas `productos.idLineaProducto` y `productos_vendidos.idLineaProducto` (snapshot); índices `ix_productos_linea`, `ix_productos_vendidos_linea`. |
+| 2026-11-24 | 003-centros-de-costo-en-compras | Nuevas tablas `centros_costo` y `tipos_gasto`; `productos_comprados` reconstruida con PK `idProductoComprado`, `idCentroCosto` e `idTipoGasto`; `lineas_producto.idCentroCosto`; índices `ix_productos_comprados_compra`, `_centro` y `_tipo`. |

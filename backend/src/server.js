@@ -7,7 +7,7 @@ import express from 'express';
 import Database from 'better-sqlite3';
 import { createToken, hashPassword, readToken, verifyPassword } from './auth.js';
 import { dataDir, db, getAuthSecret, pendingRestorePath } from './db.js';
-import { normalizeDateTimeInput, nowSql, numeric, requireFields } from './utils.js';
+import { normalizarDescripcion, normalizeDateTimeInput, nowSql, numeric, requireFields } from './utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -175,7 +175,7 @@ function registrarCatalogo({ ruta, tabla, id, campoActivo, etiqueta, usos = [], 
     if (!actual) throw httpError(404, `No se encontro ${etiqueta}`);
     const enUso = usos.filter((uso) => Number(actual[uso.campo]) > 0);
     if (enUso.length) {
-      throw httpError(409, `No se puede eliminar ${etiqueta} porque esta en uso. Puedes desactivarla.`, {
+      throw httpError(409, `No se puede eliminar ${etiqueta} porque esta en uso. Puedes desactivar el registro en su lugar.`, {
         code: 'EN_USO',
         ...Object.fromEntries(usos.map((uso) => [uso.campo, Number(actual[uso.campo])]))
       });
@@ -183,6 +183,20 @@ function registrarCatalogo({ ruta, tabla, id, campoActivo, etiqueta, usos = [], 
     db.prepare(`DELETE FROM ${tabla} WHERE idCompania = ? AND ${id} = ?`).run(idCompania, req.params.id);
     res.status(204).end();
   });
+}
+
+const CATALOGO_CENTROS = { tabla: 'centros_costo', id: 'idCentroCosto', campoActivo: 'activo', etiqueta: 'El centro de costo' };
+const CATALOGO_TIPOS = { tabla: 'tipos_gasto', id: 'idTipoGasto', campoActivo: 'activo', etiqueta: 'El tipo de gasto' };
+
+// Valida una referencia a un catalogo de la compania. null = sin valor. Un registro inactivo
+// solo se acepta si ya era el valor actual (p. ej. al editar sin cambiarlo).
+function validarReferenciaCatalogo(catalogo, idCompania, valor, valorActual = null) {
+  if (valor === null || valor === undefined || valor === '' || Number(valor) === 0) return null;
+  const registro = db.prepare(`SELECT ${catalogo.id} AS id, ${catalogo.campoActivo} AS activo FROM ${catalogo.tabla} WHERE idCompania = ? AND ${catalogo.id} = ?`)
+    .get(idCompania, numeric(valor, -1));
+  if (!registro) throw httpError(400, `${catalogo.etiqueta} no existe en esta compania`);
+  if (!registro.activo && registro.id !== valorActual) throw httpError(400, `${catalogo.etiqueta} esta inactivo`);
+  return registro.id;
 }
 
 registrarCatalogo({
@@ -194,6 +208,28 @@ registrarCatalogo({
   usos: [
     { campo: 'cantidadProductos', sql: 'SELECT COUNT(*) FROM productos p WHERE p.idLineaProducto = @id' },
     { campo: 'cantidadVentas', sql: 'SELECT COUNT(DISTINCT pv.idVenta) FROM productos_vendidos pv WHERE pv.idLineaProducto = @id' }
+  ],
+  camposExtra: {
+    idCentroCosto: (valor, idCompania, actual) => validarReferenciaCatalogo(CATALOGO_CENTROS, idCompania, valor, actual?.idCentroCosto ?? null)
+  }
+});
+
+registrarCatalogo({
+  ruta: '/api/centros-costo',
+  ...CATALOGO_CENTROS,
+  etiqueta: 'un centro de costo',
+  usos: [
+    { campo: 'cantidadItems', sql: 'SELECT COUNT(*) FROM productos_comprados pc WHERE pc.idCentroCosto = @id' },
+    { campo: 'cantidadLineas', sql: 'SELECT COUNT(*) FROM lineas_producto lp WHERE lp.idCentroCosto = @id' }
+  ]
+});
+
+registrarCatalogo({
+  ruta: '/api/tipos-gasto',
+  ...CATALOGO_TIPOS,
+  etiqueta: 'un tipo de gasto',
+  usos: [
+    { campo: 'cantidadItems', sql: 'SELECT COUNT(*) FROM productos_comprados pc WHERE pc.idTipoGasto = @id' }
   ]
 });
 
@@ -322,6 +358,120 @@ app.get('/api/reportes/ventas-por-linea', (req, res) => {
     .sort((a, b) => (a.idLineaProducto === null) - (b.idLineaProducto === null) || b.valor - a.valor);
 
   res.json({ totalVendido: redondear(totalVendido), unidades: totales.unidades, numeroVentas: totales.numeroVentas, lineas: resultado });
+});
+
+// Items de compra de la compania en el rango (por date(compras.fecha)), con su clasificacion.
+function itemsCompraEnRango(req) {
+  const where = ['c.idCompania = ?'];
+  const params = [companiaId(req)];
+  if (req.query.desde) {
+    where.push('date(c.fecha) >= date(?)');
+    params.push(req.query.desde);
+  }
+  if (req.query.hasta) {
+    where.push('date(c.fecha) <= date(?)');
+    params.push(req.query.hasta);
+  }
+  return db.prepare(`
+    SELECT pc.idProductoComprado, pc.idCompra, pc.descripcion, pc.cantidadComprada, pc.precioCompra,
+           pc.precioCompra * pc.cantidadComprada AS valor,
+           pc.idCentroCosto, cc.nombre AS centroCosto, pc.idTipoGasto, tg.nombre AS tipoGasto,
+           c.fecha, p.nombre AS proveedor
+    FROM productos_comprados pc
+    INNER JOIN compras c ON c.idCompra = pc.idCompra
+    LEFT JOIN proveedores p ON p.idProveedor = c.idProveedor
+    LEFT JOIN centros_costo cc ON cc.idCentroCosto = pc.idCentroCosto
+    LEFT JOIN tipos_gasto tg ON tg.idTipoGasto = pc.idTipoGasto
+    WHERE ${where.join(' AND ')}
+    ORDER BY c.fecha DESC, pc.idProductoComprado DESC
+  `).all(...params);
+}
+
+// Agrupa items por centro (null = "Sin asignar") con desglose por tipo (null = "Sin tipo").
+function agruparComprasPorCentro(items, incluirItems) {
+  const centros = new Map();
+  for (const item of items) {
+    const clave = item.idCentroCosto ?? 'sin-centro';
+    if (!centros.has(clave)) {
+      centros.set(clave, { idCentroCosto: item.idCentroCosto ?? null, nombre: item.centroCosto ?? 'Sin asignar', total: 0, tipos: new Map(), items: [] });
+    }
+    const centro = centros.get(clave);
+    centro.total += item.valor;
+    const claveTipo = item.idTipoGasto ?? 'sin-tipo';
+    const tipo = centro.tipos.get(claveTipo) || { idTipoGasto: item.idTipoGasto ?? null, nombre: item.tipoGasto ?? 'Sin tipo', total: 0 };
+    tipo.total += item.valor;
+    centro.tipos.set(claveTipo, tipo);
+    if (incluirItems) centro.items.push(item);
+  }
+  return [...centros.values()].map((centro) => ({
+    idCentroCosto: centro.idCentroCosto,
+    nombre: centro.nombre,
+    total: redondear(centro.total),
+    porTipo: [...centro.tipos.values()].map((tipo) => ({ ...tipo, total: redondear(tipo.total) })).sort((a, b) => b.total - a.total),
+    ...(incluirItems ? { items: centro.items } : {})
+  }));
+}
+
+app.get('/api/reportes/compras-por-centro', (req, res) => {
+  const items = itemsCompraEnRango(req);
+  const total = items.reduce((suma, item) => suma + item.valor, 0);
+  const centros = agruparComprasPorCentro(items, true)
+    .map((centro) => ({ ...centro, porcentaje: total ? redondear((centro.total / total) * 100) : 0 }))
+    .sort((a, b) => (a.idCentroCosto === null) - (b.idCentroCosto === null) || b.total - a.total);
+  res.json({ total: redondear(total), centros });
+});
+
+// design 003 D-06: ventas de las lineas del centro (snapshot de linea; asociacion linea->centro actual) menos compras del centro.
+app.get('/api/reportes/resultado-por-centro', (req, res) => {
+  const idCompania = companiaId(req);
+  const { whereSql, params } = filtroVentasReporte({ headers: req.headers, query: { desde: req.query.desde, hasta: req.query.hasta } });
+  const ventasPorCentro = db.prepare(`
+    SELECT l.idCentroCosto, SUM(pv.precioVenta * pv.cantidadVendida) AS ventas
+    FROM productos_vendidos pv
+    INNER JOIN ventas_contado v ON v.idVenta = pv.idVenta
+    LEFT JOIN lineas_producto l ON l.idLineaProducto = pv.idLineaProducto
+    ${whereSql}
+    GROUP BY l.idCentroCosto
+  `).all(...params);
+  const comprasPorCentro = agruparComprasPorCentro(itemsCompraEnRango(req), false);
+  const lineasPorCentro = db.prepare('SELECT idCentroCosto, nombre FROM lineas_producto WHERE idCompania = ? AND idCentroCosto IS NOT NULL ORDER BY nombre').all(idCompania);
+  const centrosCompania = db.prepare('SELECT idCentroCosto, nombre FROM centros_costo WHERE idCompania = ? ORDER BY nombre COLLATE NOCASE').all(idCompania);
+
+  const ventasDe = (idCentro) => ventasPorCentro.find((fila) => (fila.idCentroCosto ?? null) === idCentro)?.ventas || 0;
+  const comprasDe = (idCentro) => comprasPorCentro.find((fila) => fila.idCentroCosto === idCentro) || { total: 0, porTipo: [] };
+
+  const centros = [];
+  const gastosSinLinea = [];
+  for (const centro of centrosCompania) {
+    const lineas = lineasPorCentro.filter((linea) => linea.idCentroCosto === centro.idCentroCosto).map((linea) => linea.nombre);
+    const compras = comprasDe(centro.idCentroCosto);
+    if (lineas.length) {
+      const ventas = ventasDe(centro.idCentroCosto);
+      centros.push({
+        idCentroCosto: centro.idCentroCosto,
+        nombre: centro.nombre,
+        lineas,
+        ventas: redondear(ventas),
+        compras: compras.total,
+        diferencia: redondear(ventas - compras.total),
+        porTipo: compras.porTipo
+      });
+    } else if (compras.total) {
+      gastosSinLinea.push({ idCentroCosto: centro.idCentroCosto, nombre: centro.nombre, total: compras.total, porTipo: compras.porTipo });
+    }
+  }
+
+  const totalVentas = ventasPorCentro.reduce((suma, fila) => suma + fila.ventas, 0);
+  const totalCompras = comprasPorCentro.reduce((suma, fila) => suma + fila.total, 0);
+  const sinAsignar = comprasDe(null);
+  res.json({
+    totalVentas: redondear(totalVentas),
+    totalCompras: redondear(totalCompras),
+    centros: centros.sort((a, b) => b.ventas - a.ventas),
+    gastosSinLinea: gastosSinLinea.sort((a, b) => b.total - a.total),
+    ventasSinCentro: redondear(ventasDe(null)),
+    comprasSinAsignar: { total: sinAsignar.total, porTipo: sinAsignar.porTipo }
+  });
 });
 
 app.get('/api/companias', (req, res) => {
@@ -663,6 +813,9 @@ app.post('/api/prestamos-aportes', (req, res) => {
       montoCompraDesdeMovimiento += cantidad * precioCompra;
       return { descripcion, cantidadComprada: cantidad, precioCompra };
     });
+    // design 003: los articulos de la compra generada tambien exigen centro de costo (antes de crear nada).
+    const clasificacionMovimiento = clasificarItemsCompra(companiaId(req), req.body.compraDesdeMovimiento.productos);
+    productosCompraDesdeMovimiento = productosCompraDesdeMovimiento.map((producto, indice) => ({ ...producto, ...clasificacionMovimiento[indice] }));
 
     if (Math.abs(montoCompraDesdeMovimiento - monto) > 0.01) {
       return res.status(400).json({ error: 'El total de articulos de la compra debe coincidir con el monto del movimiento' });
@@ -685,11 +838,14 @@ app.post('/api/prestamos-aportes', (req, res) => {
       idCompra = compra.lastInsertRowid;
       const insertarProductoCompra = db.prepare(`
         INSERT INTO productos_comprados (
-          idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada, idCentroCosto, idTipoGasto
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const producto of productosCompraDesdeMovimiento) {
-        insertarProductoCompra.run(null, idCompra, null, producto.descripcion, producto.precioCompra, 0, producto.cantidadComprada);
+        insertarProductoCompra.run(
+          null, idCompra, null, producto.descripcion, producto.precioCompra, 0, producto.cantidadComprada,
+          producto.idCentroCosto, producto.idTipoGasto
+        );
       }
     }
 
@@ -1277,6 +1433,41 @@ app.get('/api/caja/movimientos', (req, res) => {
 
   res.json({ movimientos, resumen });
 });
+// design 003 D-02: cada item de compra exige centro de costo; el tipo de gasto es opcional.
+// clasificacionPrevia: ids ya usados en la compra (permite conservar un centro/tipo que se haya desactivado).
+function clasificarItemsCompra(idCompania, items, clasificacionPrevia = { centros: new Set(), tipos: new Set() }) {
+  const itemsSinCentro = items
+    .map((item, indice) => (item.idCentroCosto === null || item.idCentroCosto === undefined || item.idCentroCosto === '' ? indice : null))
+    .filter((indice) => indice !== null);
+  if (itemsSinCentro.length) {
+    throw httpError(400, 'Cada item de la compra debe tener centro de costo', { code: 'ITEMS_SIN_CENTRO', itemsSinCentro });
+  }
+  return items.map((item) => {
+    const idCentro = numeric(item.idCentroCosto, -1);
+    const idTipo = item.idTipoGasto ? numeric(item.idTipoGasto, -1) : null;
+    return {
+      idCentroCosto: validarReferenciaCatalogo(CATALOGO_CENTROS, idCompania, idCentro, clasificacionPrevia.centros.has(idCentro) ? idCentro : null),
+      idTipoGasto: validarReferenciaCatalogo(CATALOGO_TIPOS, idCompania, idTipo, clasificacionPrevia.tipos.has(idTipo) ? idTipo : null)
+    };
+  });
+}
+
+function clasificacionPreviaCompra(idCompra) {
+  const filas = db.prepare('SELECT idCentroCosto, idTipoGasto FROM productos_comprados WHERE idCompra = ?').all(idCompra);
+  return {
+    centros: new Set(filas.map((fila) => fila.idCentroCosto).filter(Boolean)),
+    tipos: new Set(filas.map((fila) => fila.idTipoGasto).filter(Boolean))
+  };
+}
+
+const SELECT_ITEMS_COMPRA = `
+  SELECT pc.*, cc.nombre AS centroCosto, tg.nombre AS tipoGasto
+  FROM productos_comprados pc
+  LEFT JOIN centros_costo cc ON cc.idCentroCosto = pc.idCentroCosto
+  LEFT JOIN tipos_gasto tg ON tg.idTipoGasto = pc.idTipoGasto
+  WHERE pc.idCompra = ?
+`;
+
 app.get('/api/compras', (req, res) => {
   const limite = queryLimit(req, 100, 5000);
   const limitSql = limite ? 'LIMIT ?' : '';
@@ -1297,6 +1488,114 @@ app.get('/api/compras', (req, res) => {
   res.json(compras);
 });
 
+// design 003 D-03: ultima clasificacion usada por descripcion normalizada.
+app.get('/api/compras/sugerencias-clasificacion', (req, res) => {
+  const filas = db.prepare(`
+    SELECT pc.descripcion, pc.idCentroCosto, pc.idTipoGasto
+    FROM productos_comprados pc
+    INNER JOIN compras c ON c.idCompra = pc.idCompra
+    WHERE c.idCompania = ? AND pc.idCentroCosto IS NOT NULL
+    ORDER BY pc.idProductoComprado ASC
+  `).all(companiaId(req));
+  const sugerencias = {};
+  for (const fila of filas) {
+    sugerencias[normalizarDescripcion(fila.descripcion)] = { idCentroCosto: fila.idCentroCosto, idTipoGasto: fila.idTipoGasto };
+  }
+  res.json(sugerencias);
+});
+
+function itemsPendientesClasificacion(idCompania, pendiente) {
+  const columna = pendiente === 'tipo' ? 'idTipoGasto' : 'idCentroCosto';
+  return db.prepare(`
+    SELECT pc.idProductoComprado, pc.idCompra, pc.descripcion, pc.cantidadComprada, pc.precioCompra,
+           pc.precioCompra * pc.cantidadComprada AS subtotal, pc.idCentroCosto, pc.idTipoGasto,
+           c.fecha, p.nombre AS proveedor
+    FROM productos_comprados pc
+    INNER JOIN compras c ON c.idCompra = pc.idCompra
+    LEFT JOIN proveedores p ON p.idProveedor = c.idProveedor
+    WHERE c.idCompania = ? AND pc.${columna} IS NULL
+    ORDER BY c.fecha DESC, pc.idProductoComprado DESC
+  `).all(idCompania);
+}
+
+// design 003 D-04: items sin centro (o sin tipo) agrupados por descripcion normalizada.
+app.get('/api/compras/items-por-clasificar', (req, res) => {
+  const pendiente = req.query.pendiente === 'tipo' ? 'tipo' : 'centro';
+  const filtro = normalizarDescripcion(req.query.q);
+  const grupos = new Map();
+  for (const item of itemsPendientesClasificacion(companiaId(req), pendiente)) {
+    const clave = normalizarDescripcion(item.descripcion);
+    if (filtro && !clave.includes(filtro)) continue;
+    if (!grupos.has(clave)) grupos.set(clave, { descripcion: clave, ejemplo: item.descripcion, cantidadItems: 0, total: 0, desde: item.fecha, hasta: item.fecha, items: [] });
+    const grupo = grupos.get(clave);
+    grupo.cantidadItems += 1;
+    grupo.total += item.subtotal;
+    if (item.fecha < grupo.desde) grupo.desde = item.fecha;
+    if (item.fecha > grupo.hasta) grupo.hasta = item.fecha;
+    grupo.items.push(item);
+  }
+  const lista = [...grupos.values()].map((grupo) => ({ ...grupo, total: redondear(grupo.total) })).sort((a, b) => b.total - a.total);
+  res.json({
+    pendiente,
+    totalItems: lista.reduce((suma, grupo) => suma + grupo.cantidadItems, 0),
+    totalValor: redondear(lista.reduce((suma, grupo) => suma + grupo.total, 0)),
+    grupos: lista
+  });
+});
+
+// Asigna centro y/o tipo a items concretos o a todo un grupo de descripcion (solo items aun pendientes del grupo).
+app.post('/api/compras/clasificar', (req, res) => {
+  const idCompania = companiaId(req);
+  const pendiente = req.body.pendiente === 'tipo' ? 'tipo' : 'centro';
+  const cambios = {};
+  if (req.body.idCentroCosto !== undefined && req.body.idCentroCosto !== null) {
+    cambios.idCentroCosto = validarReferenciaCatalogo(CATALOGO_CENTROS, idCompania, req.body.idCentroCosto);
+  }
+  if (req.body.idTipoGasto !== undefined && req.body.idTipoGasto !== null) {
+    cambios.idTipoGasto = validarReferenciaCatalogo(CATALOGO_TIPOS, idCompania, req.body.idTipoGasto);
+  }
+  const campos = Object.keys(cambios).filter((campo) => cambios[campo] !== null);
+  if (!campos.length) throw httpError(400, 'Indica el centro de costo o el tipo de gasto a asignar');
+
+  let ids = Array.isArray(req.body.idProductoComprados) ? req.body.idProductoComprados.map((id) => numeric(id, 0)).filter((id) => id > 0) : [];
+  if (!ids.length && req.body.descripcion) {
+    const clave = normalizarDescripcion(req.body.descripcion);
+    ids = itemsPendientesClasificacion(idCompania, pendiente)
+      .filter((item) => normalizarDescripcion(item.descripcion) === clave)
+      .map((item) => item.idProductoComprado);
+  }
+  if (!ids.length) throw httpError(400, 'No hay items para clasificar');
+
+  const actualizar = db.prepare(`
+    UPDATE productos_comprados
+    SET ${campos.map((campo) => `${campo} = ?`).join(', ')}
+    WHERE idProductoComprado = ?
+      AND idCompra IN (SELECT idCompra FROM compras WHERE idCompania = ?)
+  `);
+  const actualizados = db.transaction(() => ids.reduce((total, id) => total + actualizar.run(...campos.map((campo) => cambios[campo]), id, idCompania).changes, 0))();
+  res.json({ actualizados });
+});
+
+// design 003 D-05: corrige la clasificacion de un item sin tocar montos, pagos, fechas ni inventario.
+app.patch('/api/compras/:id/items/:idItem', (req, res) => {
+  const idCompania = companiaId(req);
+  const item = db.prepare(`
+    SELECT pc.* FROM productos_comprados pc
+    INNER JOIN compras c ON c.idCompra = pc.idCompra
+    WHERE c.idCompania = ? AND pc.idCompra = ? AND pc.idProductoComprado = ?
+  `).get(idCompania, req.params.id, req.params.idItem);
+  if (!item) throw httpError(404, 'Item de compra no encontrado');
+  if (req.body.idCentroCosto === null || req.body.idCentroCosto === undefined || req.body.idCentroCosto === '') {
+    throw httpError(400, 'El item debe tener centro de costo');
+  }
+  const idCentro = validarReferenciaCatalogo(CATALOGO_CENTROS, idCompania, req.body.idCentroCosto, item.idCentroCosto);
+  const idTipo = req.body.idTipoGasto === undefined
+    ? item.idTipoGasto
+    : validarReferenciaCatalogo(CATALOGO_TIPOS, idCompania, req.body.idTipoGasto, item.idTipoGasto);
+  db.prepare('UPDATE productos_comprados SET idCentroCosto = ?, idTipoGasto = ? WHERE idProductoComprado = ?').run(idCentro, idTipo, item.idProductoComprado);
+  res.json(db.prepare(`${SELECT_ITEMS_COMPRA} AND pc.idProductoComprado = ?`).get(req.params.id, item.idProductoComprado));
+});
+
 app.get('/api/compras/:id', (req, res) => {
   const compra = db.prepare(`
     SELECT c.*, p.nombre AS proveedor, p.numeroTelefono, p.correo, u.nombre AS usuario
@@ -1306,7 +1605,7 @@ app.get('/api/compras/:id', (req, res) => {
     WHERE c.idCompania = ? AND c.idCompra = ?
   `).get(companiaId(req), req.params.id);
   if (!compra) return res.status(404).json({ error: 'Compra no encontrada' });
-  const productos = db.prepare('SELECT * FROM productos_comprados WHERE idCompra = ? ORDER BY descripcion').all(req.params.id);
+  const productos = db.prepare(`${SELECT_ITEMS_COMPRA} ORDER BY pc.descripcion`).all(req.params.id);
   res.json({ ...compra, productos });
 });
 
@@ -1317,10 +1616,11 @@ app.post('/api/compras', (req, res) => {
   }
 
   const crearCompra = db.transaction(() => {
+    const clasificacion = clasificarItemsCompra(companiaId(req), req.body.productos);
     let monto = 0;
     const productosCompra = [];
 
-    for (const item of req.body.productos) {
+    for (const [indiceItem, item] of req.body.productos.entries()) {
       const cantidad = numeric(item.cantidadComprada || item.cantidad, 0);
       const precioCompra = numeric(item.precioCompra, 0);
       if (cantidad <= 0 || precioCompra < 0) {
@@ -1352,7 +1652,8 @@ app.post('/api/compras', (req, res) => {
         precioCompra,
         precioVenta,
         cantidadComprada: cantidad,
-        actualizaInventario: Boolean(producto)
+        actualizaInventario: Boolean(producto),
+        ...clasificacion[indiceItem]
       });
     }
 
@@ -1364,8 +1665,8 @@ app.post('/api/compras', (req, res) => {
 
     const insertarProducto = db.prepare(`
       INSERT INTO productos_comprados (
-        idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada, idCentroCosto, idTipoGasto
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const actualizarProducto = db.prepare(`
       UPDATE productos
@@ -1381,7 +1682,9 @@ app.post('/api/compras', (req, res) => {
         producto.descripcion,
         producto.precioCompra,
         producto.precioVenta,
-        producto.cantidadComprada
+        producto.cantidadComprada,
+        producto.idCentroCosto,
+        producto.idTipoGasto
       );
       if (producto.actualizaInventario) {
         actualizarProducto.run(producto.cantidadComprada, producto.precioCompra, producto.precioVenta, producto.idProducto);
@@ -1393,7 +1696,7 @@ app.post('/api/compras', (req, res) => {
 
   const idCompra = crearCompra();
   const compraCreada = db.prepare('SELECT * FROM compras WHERE idCompania = ? AND idCompra = ?').get(companiaId(req), idCompra);
-  const productos = db.prepare('SELECT * FROM productos_comprados WHERE idCompra = ?').all(idCompra);
+  const productos = db.prepare(SELECT_ITEMS_COMPRA).all(idCompra);
   res.status(201).json({ ...compraCreada, productos });
 });
 
@@ -1411,6 +1714,7 @@ app.put('/api/compras/:id', (req, res) => {
       throw error;
     }
 
+    const clasificacion = clasificarItemsCompra(companiaId(req), req.body.productos, clasificacionPreviaCompra(req.params.id));
     const productosAnteriores = db.prepare(`
       SELECT idProducto, cantidadComprada
       FROM productos_comprados
@@ -1430,7 +1734,7 @@ app.put('/api/compras/:id', (req, res) => {
     let monto = 0;
     const productosCompra = [];
 
-    for (const item of req.body.productos) {
+    for (const [indiceItem, item] of req.body.productos.entries()) {
       const cantidad = numeric(item.cantidadComprada || item.cantidad, 0);
       const precioCompra = numeric(item.precioCompra, 0);
       if (cantidad <= 0 || precioCompra < 0) {
@@ -1462,7 +1766,8 @@ app.put('/api/compras/:id', (req, res) => {
         precioCompra,
         precioVenta,
         cantidadComprada: cantidad,
-        actualizaInventario: Boolean(producto)
+        actualizaInventario: Boolean(producto),
+        ...clasificacion[indiceItem]
       });
     }
 
@@ -1477,8 +1782,8 @@ app.put('/api/compras/:id', (req, res) => {
 
     const insertarProducto = db.prepare(`
       INSERT INTO productos_comprados (
-        idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada, idCentroCosto, idTipoGasto
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const actualizarProducto = db.prepare(`
       UPDATE productos
@@ -1494,7 +1799,9 @@ app.put('/api/compras/:id', (req, res) => {
         producto.descripcion,
         producto.precioCompra,
         producto.precioVenta,
-        producto.cantidadComprada
+        producto.cantidadComprada,
+        producto.idCentroCosto,
+        producto.idTipoGasto
       );
       if (producto.actualizaInventario) {
         actualizarProducto.run(producto.cantidadComprada, producto.precioCompra, producto.precioVenta, producto.idProducto);
@@ -1504,7 +1811,7 @@ app.put('/api/compras/:id', (req, res) => {
 
   editarCompra();
   const compraEditada = db.prepare('SELECT * FROM compras WHERE idCompania = ? AND idCompra = ?').get(companiaId(req), req.params.id);
-  const productos = db.prepare('SELECT * FROM productos_comprados WHERE idCompra = ?').all(req.params.id);
+  const productos = db.prepare(SELECT_ITEMS_COMPRA).all(req.params.id);
   res.json({ ...compraEditada, productos });
 });
 

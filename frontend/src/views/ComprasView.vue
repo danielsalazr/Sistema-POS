@@ -36,9 +36,19 @@
               </v-col>
             </v-row>
 
+            <v-alert v-if="!centros.length" class="mb-3" type="warning" variant="tonal" density="compact">
+              Para registrar compras primero crea los centros de costo en
+              <router-link to="/clasificacion?pestana=centros">Clasificación → Centros de costo</router-link>.
+            </v-alert>
+
             <v-row>
               <v-col cols="12" md="4">
-                <v-text-field v-model="descripcionPendiente" label="Descripcion" placeholder="Fresas, banano, Nutella..." />
+                <v-text-field
+                  v-model="descripcionPendiente"
+                  label="Descripcion"
+                  placeholder="Fresas, banano, Nutella..."
+                  @update:model-value="aplicarSugerencia"
+                />
               </v-col>
               <v-col cols="6" md="3">
                 <v-text-field v-model.number="cantidadPendiente" label="Cantidad" min="0.001" step="0.001" type="number" />
@@ -46,42 +56,68 @@
               <v-col cols="6" md="3">
                 <v-text-field v-model.number="costoPendiente" label="Costo" min="0" type="number" />
               </v-col>
-              <v-col cols="6" md="3">
-                <v-btn block class="mt-1" color="primary" prepend-icon="mdi-plus" :disabled="!puedeAgregarItem" @click="agregarProductoPendiente">
+              <v-col cols="12" md="9">
+                <ClasificacionItemSelect
+                  v-model:id-centro-costo="centroPendiente"
+                  v-model:id-tipo-gasto="tipoPendiente"
+                  :centros="centrosTodos"
+                  :tipos="tiposTodos"
+                  :sugerido="clasificacionSugerida"
+                  @update:id-centro-costo="clasificacionSugerida = false"
+                  @update:id-tipo-gasto="clasificacionSugerida = false"
+                />
+              </v-col>
+              <v-col cols="12" md="3">
+                <v-btn block size="large" color="primary" prepend-icon="mdi-plus" :disabled="!puedeAgregarItem" @click="agregarProductoPendiente">
                   Agregar
                 </v-btn>
               </v-col>
             </v-row>
 
-            <v-table density="comfortable">
-              <thead>
-                <tr>
-                  <th>Descripcion</th>
-                  <th class="text-right">Costo</th>
-                  <th class="text-right">Cantidad</th>
-                  <th class="text-right">Subtotal</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-if="carrito.length === 0">
-                  <td colspan="5" class="empty-row">Agrega lineas para registrar la compra.</td>
-                </tr>
-                <tr v-for="(item, index) in carrito" :key="item.lineaId">
-                  <td>
-                    <div>{{ item.descripcion }}</div>
-                  </td>
-                  <td class="text-right">{{ currency(item.precioCompra) }}</td>
-                  <td class="text-right qty-cell">
-                    <v-text-field v-model.number="item.cantidadComprada" type="number" min="0.001" step="0.001" density="compact" hide-details />
-                  </td>
-                  <td class="text-right">{{ currency(item.precioCompra * item.cantidadComprada) }}</td>
-                  <td class="text-right">
-                    <v-btn icon="mdi-delete" color="error" size="small" variant="text" @click="quitarProducto(index)" />
-                  </td>
-                </tr>
-              </tbody>
-            </v-table>
+            <div v-if="carrito.length > 1" class="aplicar-todos">
+              <span class="aplicar-todos__titulo">Aplicar a todos los ítems</span>
+              <ClasificacionItemSelect
+                v-model:id-centro-costo="centroTodos"
+                v-model:id-tipo-gasto="tipoTodos"
+                :centros="centrosTodos"
+                :tipos="tiposTodos"
+                compacta
+              />
+              <v-btn size="large" variant="tonal" color="primary" :disabled="!centroTodos && !tipoTodos" @click="aplicarATodos">Aplicar</v-btn>
+            </div>
+
+            <div v-if="carrito.length === 0" class="empty-row">Agrega lineas para registrar la compra.</div>
+            <div
+              v-for="(item, index) in carrito"
+              :key="item.lineaId"
+              class="item-compra"
+              :class="{ 'item-compra--pendiente': !item.idCentroCosto }"
+            >
+              <div class="item-compra__fila">
+                <div class="item-compra__descripcion">
+                  <v-icon v-if="!item.idCentroCosto" icon="mdi-alert-circle" color="warning" size="small" class="mr-1" />
+                  {{ item.descripcion }}
+                </div>
+                <strong>{{ currency(item.precioCompra * item.cantidadComprada) }}</strong>
+                <v-btn icon="mdi-delete" color="error" variant="text" aria-label="Quitar item" @click="quitarProducto(index)" />
+              </div>
+              <div class="item-compra__fila">
+                <span class="text-medium-emphasis">{{ currency(item.precioCompra) }} ×</span>
+                <v-text-field v-model.number="item.cantidadComprada" type="number" min="0.001" step="0.001" density="compact" hide-details class="qty-cell" />
+              </div>
+              <ClasificacionItemSelect
+                v-model:id-centro-costo="item.idCentroCosto"
+                v-model:id-tipo-gasto="item.idTipoGasto"
+                :centros="centrosTodos"
+                :tipos="tiposTodos"
+                :marcar-faltante="true"
+                compacta
+              />
+            </div>
+            <div v-if="itemsSinCentro > 0" class="sin-centro-aviso">
+              <v-icon icon="mdi-alert-circle" color="warning" size="small" />
+              {{ itemsSinCentro }} ítem(s) sin centro de costo. Asígnalos para poder guardar.
+            </div>
           </v-card-text>
 
           <v-divider />
@@ -141,7 +177,7 @@
       </v-col>
     </v-row>
 
-    <v-dialog v-model="detalleDialog" max-width="820">
+    <v-dialog v-model="detalleDialog" max-width="820" :fullscreen="$vuetify.display.xs">
       <v-card>
         <v-card-title class="d-flex align-center">
           <span>Compra {{ detalle?.idCompra }}</span>
@@ -156,28 +192,48 @@
             <v-list-item title="Fecha del movimiento" :subtitle="formatDate(detalle.fecha)" />
             <v-list-item title="Fecha de registro" :subtitle="formatDate(detalle.fechaRegistro)" />
           </v-list>
-          <v-table density="comfortable">
-            <thead>
-              <tr>
-                <th>Descripcion</th>
-                <th class="text-right">Cantidad</th>
-                <th class="text-right">Costo</th>
-                <th class="text-right">Subtotal</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(producto, index) in detalle.productos" :key="`${producto.idProducto || 'libre'}-${producto.descripcion}-${index}`">
-                <td>{{ producto.descripcion }}</td>
-                <td class="text-right">{{ producto.cantidadComprada }}</td>
-                <td class="text-right">{{ currency(producto.precioCompra) }}</td>
-                <td class="text-right">{{ currency(producto.precioCompra * producto.cantidadComprada) }}</td>
-              </tr>
-            </tbody>
-          </v-table>
+          <div v-for="producto in detalle.productos" :key="producto.idProductoComprado" class="item-compra">
+            <div class="item-compra__fila">
+              <div class="item-compra__descripcion">{{ producto.descripcion }}</div>
+              <strong>{{ currency(producto.precioCompra * producto.cantidadComprada) }}</strong>
+            </div>
+            <div class="item-compra__fila">
+              <span class="text-medium-emphasis">{{ producto.cantidadComprada }} × {{ currency(producto.precioCompra) }}</span>
+            </div>
+            <div class="item-compra__fila item-compra__clasificacion">
+              <v-chip size="small" variant="tonal" :color="producto.centroCosto ? 'primary' : 'warning'" prepend-icon="mdi-sitemap-outline">
+                {{ producto.centroCosto || 'Sin centro' }}
+              </v-chip>
+              <v-chip size="small" variant="tonal" prepend-icon="mdi-tag-outline">{{ producto.tipoGasto || 'Sin tipo' }}</v-chip>
+              <v-spacer />
+              <v-btn size="small" variant="text" prepend-icon="mdi-pencil" @click="abrirCorreccion(producto)">Cambiar clasificación</v-btn>
+            </div>
+          </div>
         </v-card-text>
       </v-card>
     </v-dialog>
 
+
+    <v-dialog v-model="correccionDialog" max-width="520" :fullscreen="$vuetify.display.xs">
+      <v-card>
+        <v-card-title>Clasificación de "{{ itemCorreccion?.descripcion }}"</v-card-title>
+        <v-card-text>
+          <p class="mb-3 text-medium-emphasis">Solo cambia el centro y el tipo de gasto; montos, pagos e inventario no se modifican.</p>
+          <ClasificacionItemSelect
+            v-model:id-centro-costo="correccion.idCentroCosto"
+            v-model:id-tipo-gasto="correccion.idTipoGasto"
+            :centros="centrosTodos"
+            :tipos="tiposTodos"
+            :marcar-faltante="true"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn size="large" variant="text" @click="correccionDialog = false">Cancelar</v-btn>
+          <v-btn size="large" color="primary" :disabled="!correccion.idCentroCosto" :loading="guardandoCorreccion" @click="guardarCorreccion">Guardar</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <v-dialog v-model="confirmarAnulacionCompraDialog" max-width="460">
       <v-card>
@@ -199,8 +255,10 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { api } from '../api.js';
+import ClasificacionItemSelect from '../components/ClasificacionItemSelect.vue';
+import { normalizarDescripcion } from '../texto.js';
 import { formatLocalDateTime, inputToSql, sqlToDateInput, todayDateInput } from '../dates.js';
 import { session } from '../session.js';
 
@@ -228,6 +286,18 @@ const detalle = ref(null);
 const compraEditando = ref(null);
 const compraParaAnular = ref(null);
 const snackbar = ref({ visible: false, text: '', color: 'success' });
+const centrosTodos = ref([]);
+const tiposTodos = ref([]);
+const sugerencias = ref({});
+const centroPendiente = ref(null);
+const tipoPendiente = ref(null);
+const clasificacionSugerida = ref(false);
+const centroTodos = ref(null);
+const tipoTodos = ref(null);
+const correccionDialog = ref(false);
+const itemCorreccion = ref(null);
+const correccion = reactive({ idCentroCosto: null, idTipoGasto: null });
+const guardandoCorreccion = ref(false);
 let nextLineaId = 1;
 
 const limiteHistorialOpciones = [
@@ -249,7 +319,9 @@ const headers = [
 
 const total = computed(() => carrito.value.reduce((sum, item) => sum + Number(item.precioCompra || 0) * Number(item.cantidadComprada || 0), 0));
 const saldoCompra = computed(() => Math.max(total.value - Number(pago.value || 0), 0));
-const puedeGuardar = computed(() => carrito.value.length > 0 && proveedorSeleccionado.value && Number(pago.value || 0) >= 0);
+const centros = computed(() => centrosTodos.value.filter((centro) => centro.activo));
+const itemsSinCentro = computed(() => carrito.value.filter((item) => !item.idCentroCosto).length);
+const puedeGuardar = computed(() => carrito.value.length > 0 && proveedorSeleccionado.value && Number(pago.value || 0) >= 0 && itemsSinCentro.value === 0);
 const puedeAgregarItem = computed(() => descripcionPendiente.value.trim() && Number(cantidadPendiente.value || 0) > 0 && Number(costoPendiente.value || 0) >= 0);
 
 function currency(value) {
@@ -271,6 +343,68 @@ async function buscarProveedores() {
     proveedores.value = await api.get(`/proveedores?q=${encodeURIComponent(busquedaProveedor.value || '')}`);
   } finally {
     cargandoProveedores.value = false;
+  }
+}
+
+async function cargarClasificacion() {
+  try {
+    const [centrosPayload, tiposPayload, sugerenciasPayload] = await Promise.all([
+      api.get('/centros-costo?incluirInactivas=1'),
+      api.get('/tipos-gasto?incluirInactivas=1'),
+      api.get('/compras/sugerencias-clasificacion')
+    ]);
+    centrosTodos.value = centrosPayload;
+    tiposTodos.value = tiposPayload;
+    sugerencias.value = sugerenciasPayload;
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+// design 003 D-03: propone la clasificacion usada la ultima vez para la misma descripcion.
+function aplicarSugerencia(descripcion) {
+  const sugerencia = sugerencias.value[normalizarDescripcion(descripcion)];
+  if (!sugerencia) {
+    clasificacionSugerida.value = false;
+    return;
+  }
+  const centro = centrosTodos.value.find((item) => item.idCentroCosto === sugerencia.idCentroCosto && item.activo);
+  if (!centro) return;
+  const tipo = tiposTodos.value.find((item) => item.idTipoGasto === sugerencia.idTipoGasto && item.activo);
+  centroPendiente.value = centro.idCentroCosto;
+  tipoPendiente.value = tipo ? tipo.idTipoGasto : null;
+  clasificacionSugerida.value = true;
+}
+
+function aplicarATodos() {
+  for (const item of carrito.value) {
+    if (centroTodos.value) item.idCentroCosto = centroTodos.value;
+    if (tipoTodos.value) item.idTipoGasto = tipoTodos.value;
+  }
+  notify('Clasificación aplicada a todos los ítems', 'info');
+}
+
+function abrirCorreccion(producto) {
+  itemCorreccion.value = producto;
+  correccion.idCentroCosto = producto.idCentroCosto ?? null;
+  correccion.idTipoGasto = producto.idTipoGasto ?? null;
+  correccionDialog.value = true;
+}
+
+async function guardarCorreccion() {
+  guardandoCorreccion.value = true;
+  try {
+    await api.patch(`/compras/${detalle.value.idCompra}/items/${itemCorreccion.value.idProductoComprado}`, {
+      idCentroCosto: correccion.idCentroCosto,
+      idTipoGasto: correccion.idTipoGasto
+    });
+    correccionDialog.value = false;
+    detalle.value = await api.get(`/compras/${detalle.value.idCompra}`);
+    notify('Clasificación actualizada');
+  } catch (err) {
+    notify(err.message, 'error');
+  } finally {
+    guardandoCorreccion.value = false;
   }
 }
 
@@ -307,8 +441,11 @@ async function agregarProductoPendiente() {
     descripcion: descripcionPendiente.value.trim(),
     cantidadComprada: cantidad,
     precioCompra: Number(costoPendiente.value || 0),
-    precioVenta: 0
+    precioVenta: 0,
+    idCentroCosto: centroPendiente.value,
+    idTipoGasto: tipoPendiente.value
   });
+  clasificacionSugerida.value = false;
   descripcionPendiente.value = '';
   cantidadPendiente.value = 1;
   costoPendiente.value = 0;
@@ -331,6 +468,11 @@ function limpiar() {
   cantidadPendiente.value = 1;
   costoPendiente.value = 0;
   fechaMovimiento.value = todayDateInput();
+  centroPendiente.value = null;
+  tipoPendiente.value = null;
+  centroTodos.value = null;
+  tipoTodos.value = null;
+  clasificacionSugerida.value = false;
 }
 
 function cancelarEdicion() {
@@ -352,7 +494,9 @@ async function registrarCompra() {
         codigoBarras: null,
         cantidadComprada: Number(item.cantidadComprada),
         precioCompra: Number(item.precioCompra),
-        precioVenta: 0
+        precioVenta: 0,
+        idCentroCosto: item.idCentroCosto,
+        idTipoGasto: item.idTipoGasto || null
       }))
     };
     const compra = compraEditando.value
@@ -361,7 +505,7 @@ async function registrarCompra() {
     notify(`Compra ${compra.idCompra} ${compraEditando.value ? 'actualizada' : 'registrada'}`);
     compraEditando.value = null;
     limpiar();
-    await refrescarCompras();
+    await Promise.all([refrescarCompras(), cargarClasificacion()]);
   } catch (err) {
     notify(err.message, 'error');
   } finally {
@@ -393,12 +537,20 @@ async function editarCompra(compra) {
       descripcion: producto.descripcion,
       cantidadComprada: producto.cantidadComprada,
       precioCompra: producto.precioCompra,
-      precioVenta: 0
+      precioVenta: 0,
+      idCentroCosto: producto.idCentroCosto ?? null,
+      idTipoGasto: producto.idTipoGasto ?? null
     }));
     pago.value = compraCompleta.pago;
     fechaMovimiento.value = sqlToDateInput(compraCompleta.fecha);
     detalleDialog.value = false;
-    notify(`Compra ${compraCompleta.idCompra} cargada para edicion`, 'info');
+    const pendientes = carrito.value.filter((item) => !item.idCentroCosto).length;
+    notify(
+      pendientes
+        ? `Compra ${compraCompleta.idCompra} cargada: asigna centro de costo a ${pendientes} ítem(s) antes de guardar`
+        : `Compra ${compraCompleta.idCompra} cargada para edicion`,
+      pendientes ? 'warning' : 'info'
+    );
   } catch (err) {
     notify(err.message, 'error');
   }
@@ -430,7 +582,7 @@ async function confirmarAnulacionCompra() {
   }
 }
 onMounted(async () => {
-  await Promise.all([buscarProveedores(), loadHistorial()]);
+  await Promise.all([buscarProveedores(), loadHistorial(), cargarClasificacion()]);
 });
 </script>
 
@@ -442,7 +594,64 @@ onMounted(async () => {
 }
 
 .qty-cell {
-  width: 120px;
+  max-width: 120px;
+}
+
+.aplicar-todos {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: #f4f7fb;
+}
+
+.aplicar-todos__titulo {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 720px) {
+  .aplicar-todos {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.item-compra {
+  border-bottom: 1px solid #eef0f3;
+  padding: 10px 0;
+  display: grid;
+  gap: 6px;
+}
+
+.item-compra--pendiente {
+  background: #fff8eb;
+  border-left: 3px solid #f79009;
+  padding-left: 8px;
+}
+
+.item-compra__fila {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.item-compra__descripcion {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.item-compra__clasificacion {
+  flex-wrap: wrap;
+}
+
+.sin-centro-aviso {
+  color: #b54708;
+  font-size: 0.9rem;
+  margin-top: 8px;
 }
 
 .history-title {

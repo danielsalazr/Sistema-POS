@@ -180,6 +180,66 @@ for (const table of ['productos', 'productos_vendidos']) {
 db.exec('CREATE INDEX IF NOT EXISTS ix_productos_linea ON productos (idLineaProducto)');
 db.exec('CREATE INDEX IF NOT EXISTS ix_productos_vendidos_linea ON productos_vendidos (idLineaProducto)');
 
+// Feature 003: centro de costo por linea de producto.
+const lineasProductoColumns = db.prepare('PRAGMA table_info(lineas_producto)').all().map((column) => column.name);
+if (!lineasProductoColumns.includes('idCentroCosto')) {
+  db.exec('ALTER TABLE lineas_producto ADD COLUMN idCentroCosto INTEGER REFERENCES centros_costo (idCentroCosto)');
+}
+
+// Feature 003 (design D-01): productos_comprados gana PK propia, idCentroCosto e idTipoGasto.
+// Se reconstruye la tabla conservando cada fila (idProductoComprado = rowid anterior) y se verifica
+// conteo y suma antes de confirmar: si no cuadra, la transaccion se revierte y la app no arranca.
+const productosCompradosActual = db.prepare('PRAGMA table_info(productos_comprados)').all().map((column) => column.name);
+if (!productosCompradosActual.includes('idProductoComprado')) {
+  const control = () => db.prepare('SELECT COUNT(*) AS filas, COALESCE(SUM(precioCompra * cantidadComprada), 0) AS total FROM productos_comprados').get();
+  const antes = control();
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec('ALTER TABLE productos_comprados RENAME TO productos_comprados_old');
+      db.exec(`
+        CREATE TABLE productos_comprados (
+          idProductoComprado INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+          idProducto INTEGER,
+          idCompra INTEGER NOT NULL,
+          codigoBarras TEXT,
+          descripcion TEXT NOT NULL,
+          precioCompra REAL NOT NULL,
+          precioVenta REAL NOT NULL,
+          cantidadComprada REAL NOT NULL,
+          idCentroCosto INTEGER,
+          idTipoGasto INTEGER,
+          FOREIGN KEY (idCompra) REFERENCES compras (idCompra) ON DELETE CASCADE ON UPDATE CASCADE,
+          FOREIGN KEY (idProducto) REFERENCES productos (idProducto) ON DELETE RESTRICT ON UPDATE CASCADE,
+          FOREIGN KEY (idCentroCosto) REFERENCES centros_costo (idCentroCosto) ON DELETE RESTRICT,
+          FOREIGN KEY (idTipoGasto) REFERENCES tipos_gasto (idTipoGasto) ON DELETE RESTRICT
+        )
+      `);
+      db.exec(`
+        INSERT INTO productos_comprados (
+          idProductoComprado, idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada
+        )
+        SELECT rowid, idProducto, idCompra, codigoBarras, descripcion, precioCompra, precioVenta, cantidadComprada
+        FROM productos_comprados_old
+        ORDER BY rowid
+      `);
+      const despues = control();
+      if (despues.filas !== antes.filas || Math.abs(despues.total - antes.total) > 0.001) {
+        throw new Error(`Migracion de productos_comprados no cuadra: antes ${antes.filas}/${antes.total}, despues ${despues.filas}/${despues.total}`);
+      }
+      db.exec('DROP TABLE productos_comprados_old');
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+  const errores = db.pragma('foreign_key_check(productos_comprados)');
+  if (errores.length) throw new Error(`productos_comprados quedo con ${errores.length} referencias invalidas`);
+  console.log(`Migracion productos_comprados aplicada: ${antes.filas} items, total ${antes.total}`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS ix_productos_comprados_compra ON productos_comprados (idCompra)');
+db.exec('CREATE INDEX IF NOT EXISTS ix_productos_comprados_centro ON productos_comprados (idCentroCosto)');
+db.exec('CREATE INDEX IF NOT EXISTS ix_productos_comprados_tipo ON productos_comprados (idTipoGasto)');
+
 const defaults = db.transaction(() => {
   db.prepare('INSERT OR IGNORE INTO clientes (idCliente, idCompania, nombreCompleto, numeroTelefono, nit, direccion) VALUES (1, 1, ?, ?, ?, ?)').run('Mostrador', '0000000000', '', '');
   db.prepare('INSERT INTO empresa (idCompania, nombre, direccion, telefono, mensajePersonal) SELECT 1, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM empresa WHERE idCompania = 1)').run('', '', '', '');

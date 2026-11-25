@@ -161,7 +161,7 @@
 
                 <v-row dense class="mt-1">
                   <v-col cols="12" md="5">
-                    <v-text-field v-model="articuloCompraForm.descripcion" label="Articulo" density="compact" />
+                    <v-text-field v-model="articuloCompraForm.descripcion" label="Articulo" density="compact" @update:model-value="aplicarSugerenciaArticulo" />
                   </v-col>
                   <v-col cols="6" md="2">
                     <v-text-field v-model.number="articuloCompraForm.cantidad" label="Cantidad" type="number" min="1" density="compact" />
@@ -169,12 +169,26 @@
                   <v-col cols="6" md="3">
                     <v-text-field v-model.number="articuloCompraForm.costo" label="Costo" type="number" min="0" density="compact" />
                   </v-col>
+                  <v-col cols="12" md="10">
+                    <ClasificacionItemSelect
+                      v-model:id-centro-costo="centroArticulo"
+                      v-model:id-tipo-gasto="tipoArticulo"
+                      :centros="centrosTodos"
+                      :tipos="tiposGastoTodos"
+                      :sugerido="articuloSugerido"
+                      compacta
+                      @update:id-centro-costo="articuloSugerido = false"
+                    />
+                  </v-col>
                   <v-col cols="12" md="2">
-                    <v-btn block color="primary" variant="tonal" prepend-icon="mdi-plus" :disabled="!puedeAgregarArticuloCompra" @click="agregarArticuloCompra">
+                    <v-btn block size="large" color="primary" variant="tonal" prepend-icon="mdi-plus" :disabled="!puedeAgregarArticuloCompra" @click="agregarArticuloCompra">
                       Agregar
                     </v-btn>
                   </v-col>
                 </v-row>
+                <div v-if="!centroArticulo && articuloCompraForm.descripcion.trim()" class="text-caption text-warning">
+                  Elige el centro de costo del artículo para poder agregarlo.
+                </div>
 
                 <v-table density="compact" class="mt-2">
                   <thead>
@@ -191,7 +205,10 @@
                       <td colspan="5" class="empty-row">Agrega articulos para crear la compra.</td>
                     </tr>
                     <tr v-for="(producto, index) in compraDesdeMovimiento.productos" :key="producto.lineaId">
-                      <td>{{ producto.descripcion }}</td>
+                      <td>
+                        <div>{{ producto.descripcion }}</div>
+                        <div class="text-caption text-medium-emphasis">{{ nombreCentro(producto.idCentroCosto) }}{{ producto.idTipoGasto ? ` · ${nombreTipoGasto(producto.idTipoGasto)}` : '' }}</div>
+                      </td>
                       <td class="text-right">{{ producto.cantidadComprada }}</td>
                       <td class="text-right">{{ currency(producto.precioCompra) }}</td>
                       <td class="text-right">{{ currency(producto.cantidadComprada * producto.precioCompra) }}</td>
@@ -375,7 +392,9 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '../api.js';
+import ClasificacionItemSelect from '../components/ClasificacionItemSelect.vue';
 import { session } from '../session.js';
+import { normalizarDescripcion } from '../texto.js';
 
 const personas = ref([]);
 const movimientos = ref([]);
@@ -419,6 +438,12 @@ const eliminarForm = reactive(emptyEliminarMovimiento());
 const compraDesdeMovimiento = reactive(emptyCompraDesdeMovimiento());
 const articuloCompraForm = reactive(emptyArticuloCompra());
 let nextArticuloCompraId = 1;
+const centrosTodos = ref([]);
+const tiposGastoTodos = ref([]);
+const sugerenciasClasificacion = ref({});
+const centroArticulo = ref(null);
+const tipoArticulo = ref(null);
+const articuloSugerido = ref(false);
 
 const personasHeaders = [
   { title: 'Nombre', key: 'nombre' },
@@ -446,7 +471,7 @@ const puedeGuardarSubsanacion = computed(() => Number(subsanacionForm.monto || 0
 const puedeEliminarMovimiento = computed(() => eliminarForm.confirmacion.trim().toUpperCase() === 'ELIMINAR' && eliminarForm.contrasena.length > 0 && movimientoAEliminar.value);
 const puedeConvertirMovimientoEnCompra = computed(() => !movimientoForm.idMovimiento && esEntrada(movimientoForm.tipo));
 const totalCompraDesdeMovimiento = computed(() => compraDesdeMovimiento.productos.reduce((sum, item) => sum + Number(item.cantidadComprada || 0) * Number(item.precioCompra || 0), 0));
-const puedeAgregarArticuloCompra = computed(() => articuloCompraForm.descripcion.trim() && Number(articuloCompraForm.cantidad || 0) > 0 && Number(articuloCompraForm.costo || 0) >= 0);
+const puedeAgregarArticuloCompra = computed(() => articuloCompraForm.descripcion.trim() && Number(articuloCompraForm.cantidad || 0) > 0 && Number(articuloCompraForm.costo || 0) >= 0 && Boolean(centroArticulo.value));
 const puedeGuardarMovimiento = computed(() => (
   movimientoForm.idPersonaFinanciera &&
   Number(movimientoForm.monto || 0) > 0 &&
@@ -550,6 +575,44 @@ async function loadProveedores() {
   proveedores.value = await api.get('/proveedores');
 }
 
+async function loadClasificacionCompras() {
+  try {
+    const [centrosPayload, tiposPayload, sugerenciasPayload] = await Promise.all([
+      api.get('/centros-costo?incluirInactivas=1'),
+      api.get('/tipos-gasto?incluirInactivas=1'),
+      api.get('/compras/sugerencias-clasificacion')
+    ]);
+    centrosTodos.value = centrosPayload;
+    tiposGastoTodos.value = tiposPayload;
+    sugerenciasClasificacion.value = sugerenciasPayload;
+  } catch {
+    centrosTodos.value = [];
+    tiposGastoTodos.value = [];
+  }
+}
+
+function nombreCentro(idCentro) {
+  return centrosTodos.value.find((centro) => centro.idCentroCosto === idCentro)?.nombre || 'Sin centro';
+}
+
+function nombreTipoGasto(idTipo) {
+  return tiposGastoTodos.value.find((tipo) => tipo.idTipoGasto === idTipo)?.nombre || '';
+}
+
+// design 003 D-03: misma sugerencia por descripcion que en Compras.
+function aplicarSugerenciaArticulo(descripcion) {
+  const sugerencia = sugerenciasClasificacion.value[normalizarDescripcion(descripcion)];
+  const centro = sugerencia && centrosTodos.value.find((item) => item.idCentroCosto === sugerencia.idCentroCosto && item.activo);
+  if (!centro) {
+    articuloSugerido.value = false;
+    return;
+  }
+  const tipo = tiposGastoTodos.value.find((item) => item.idTipoGasto === sugerencia.idTipoGasto && item.activo);
+  centroArticulo.value = centro.idCentroCosto;
+  tipoArticulo.value = tipo ? tipo.idTipoGasto : null;
+  articuloSugerido.value = true;
+}
+
 async function refrescarPrestamosAportes() {
   await Promise.all([loadPersonas(), loadMovimientos()]);
 
@@ -629,8 +692,11 @@ function agregarArticuloCompra() {
     lineaId: nextArticuloCompraId++,
     descripcion: articuloCompraForm.descripcion.trim(),
     cantidadComprada: Math.max(Number(articuloCompraForm.cantidad || 1), 1),
-    precioCompra: Number(articuloCompraForm.costo || 0)
+    precioCompra: Number(articuloCompraForm.costo || 0),
+    idCentroCosto: centroArticulo.value,
+    idTipoGasto: tipoArticulo.value
   });
+  articuloSugerido.value = false;
   Object.assign(articuloCompraForm, emptyArticuloCompra());
   sincronizarMontoCompraDesdeMovimiento();
 }
@@ -654,7 +720,9 @@ async function guardarMovimiento() {
         productos: compraDesdeMovimiento.productos.map((item) => ({
           descripcion: item.descripcion,
           cantidadComprada: Number(item.cantidadComprada),
-          precioCompra: Number(item.precioCompra)
+          precioCompra: Number(item.precioCompra),
+          idCentroCosto: item.idCentroCosto,
+          idTipoGasto: item.idTipoGasto || null
         }))
       };
     }
@@ -738,7 +806,7 @@ async function verDetalleMovimiento(item) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadPersonas(), loadMovimientos(), loadMediosPago(), loadProveedores()]);
+  await Promise.all([loadPersonas(), loadMovimientos(), loadMediosPago(), loadProveedores(), loadClasificacionCompras()]);
 });
 </script>
 

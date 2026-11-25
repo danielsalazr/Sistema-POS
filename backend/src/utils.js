@@ -42,3 +42,13 @@ export function normalizeDateTimeInput(value) {
   if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(normalized)) return normalized;
   return localDateTimeSql(new Date(value));
 }
+
+// Normaliza descripciones de texto libre para agrupar y sugerir: minusculas, sin tildes, espacios colapsados.
+export function normalizarDescripcion(valor) {
+  return String(valor ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
